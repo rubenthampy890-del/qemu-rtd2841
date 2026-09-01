@@ -1,0 +1,232 @@
+/*
+ * rtd299s device tree source
+ *
+*/
+
+
+/dts-v1/;
+/include/ "skeleton.dtsi"
+
+/ {
+	model = "realtek,rtd299s";
+	compatible = "rtk,rtd299s";
+	interrupt-parent = <&gic>;
+
+        firmware {
+            android {
+               compatible = "android,firmware";
+               hardware = "rtd284x";
+            fstab {
+               compatible = "android,fstab";
+            system {
+               compatible = "android,system";
+               dev = "/dev/block/platform/18010800.emmc/by-name/system";
+               type = "ext4";
+               mnt_flags = "ro,noatime wait";
+               fsmgr_flags = "wait";
+            };
+            vendor {
+               compatible = "android,vendor";
+               dev = "/dev/block/platform/18010800.emmc/by-name/vendor";
+               type = "ext4";
+               mnt_flags = "ro,noatime wait";
+               fsmgr_flags = "wait";
+            };
+            };
+            };
+        };
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		cpu-map {
+			cluster0: cluster0 {
+				#cooling-cells = <2>; /* min followed by max */
+
+				core0 {
+					cpu = <&A53_0>;
+				};
+
+				core1 {
+					cpu = <&A53_1>;
+				};
+				core2 {
+					cpu = <&A53_2>;
+				};
+				core3 {
+					cpu = <&A53_3>;
+				};
+
+			};
+
+		};
+
+		idle-states {
+			entry-method = "arm,psci";
+
+			CPU_SLEEP_0: cpu-sleep-0 {
+				compatible = "arm,idle-state";
+				entry-method-param = <0x0010000>;
+				entry-latency-us = <40>;
+				exit-latency-us = <100>;
+				min-residency-us = <150>;
+			};
+
+			CLUSTER_SLEEP_0: cluster-sleep-0 {
+				compatible = "arm,idle-state";
+				entry-method-param = <0x1010000>;
+				entry-latency-us = <500>;
+				exit-latency-us = <1000>;
+				min-residency-us = <2500>;
+			};
+		};
+
+		A53_0: cpu@0 {
+			compatible = "arm,cortex-a53","arm,armv8";
+			reg = <0x0>;
+			device_type = "cpu";
+			enable-method = "psci";
+                        next-level-cache = <&A53_L2>;
+			cpu-idle-states = <&CPU_SLEEP_0 &CLUSTER_SLEEP_0>;
+			clocks = <&rtk_dvfs 1>;
+			clock-names = "vlittle";
+		};
+
+		A53_1: cpu@1 {
+			compatible = "arm,cortex-a53","arm,armv8";
+			reg = <0x1>;
+			device_type = "cpu";
+			enable-method = "psci";
+                        next-level-cache = <&A53_L2>;
+			cpu-idle-states = <&CPU_SLEEP_0 &CLUSTER_SLEEP_0>;
+			clocks = <&rtk_dvfs 1>;
+			clock-names = "vlittle";
+		};
+		A53_2: cpu@2 {
+			compatible = "arm,cortex-a53","arm,armv8";
+			reg = <0x2>;
+			device_type = "cpu";
+			enable-method = "psci";
+                        next-level-cache = <&A53_L2>;
+			cpu-idle-states = <&CPU_SLEEP_0 &CLUSTER_SLEEP_0>;
+			clocks = <&rtk_dvfs 1>;
+			clock-names = "vlittle";
+		};
+
+		A53_3: cpu@3 {
+			compatible = "arm,cortex-a53","arm,armv8";
+			reg = <0x3>;
+			device_type = "cpu";
+			enable-method = "psci";
+                        next-level-cache = <&A53_L2>;
+			cpu-idle-states = <&CPU_SLEEP_0 &CLUSTER_SLEEP_0>;
+			clocks = <&rtk_dvfs 1>;
+			clock-names = "vlittle";
+		};
+
+
+                A53_L2: l2-cache0 {
+                        compatible = "cache";
+                };
+
+	};
+
+//	memory {
+//		reg = <0x00000000 0x10000000>; /* 512MB */
+//	};
+
+        firmware {
+                optee {
+                        compatible = "linaro,optee-tz";
+                        method = "smc";
+                };
+        };
+
+	chosen {
+		bootargs ="androidboot.console=ttyS0 console=ttyS0,115200 envp=100700 flashtype=emmc mmcparts=rtkemmc:3358720k,524288k(/system),1572864k(/data),524288k(/cache),16384k(/res) earlyprintk ac_on ac_on root=/dev/mmcblk0p1 rootfstype=ext4 ro rootwait";
+	};
+
+	gic:interrupt-controller@0x18081000 {
+		compatible = "realtek,cortex-a9-gic";
+		#interrupt-cells = <3>;
+		interrupt-controller;
+		reg = <0x18081000 0x1000>,    /* gic dist base */
+			<0x18082000 0x1000>;    /* gic cpu base  */
+	};
+
+	uart0: serial@18062300 {
+		compatible = "realtek,rtd29xx-uart";
+		reg = <0x18062300 0x1000>;
+		interrupts = <0 25>;
+	};
+
+	gpu@0x18040000 {
+		compatible = "arm,malit6xx", "arm,mali-midgard";
+		reg = <0x18040000 0x4000>;
+		interrupts = <0 26>, <0 27>, <0 14>;
+		interrupt-names = "JOB", "MMU", "GPU";
+
+		//clocks = <&pclk_mali>;
+		clock-names = "clk_mali";
+	};
+
+       clocks {
+               compatible = "arm,rtk-clks";
+
+                rtk_dvfs: rtk_clocks@0 {
+                        compatible = "arm,rtk-clk-indexed";
+                        #clock-cells = <1>;
+                        clock-indices = <0>, <1>;
+                        clock-output-names = "vbig", "vlittle";
+                };
+
+                rtk_clk: rtk_clocks@2 {
+                        compatible = "arm,rtk-clk-range";
+                        #clock-cells = <1>;
+                        clock-indices = <2>, <3>;
+                        frequency-range = <23750000 165000000>;
+                        clock-output-names = "pxlclk0", "pxlclk1";
+                };
+       };
+
+        cpufreq {
+                compatible = "arm,rtk-cpufreq";
+        };
+
+	thermal@0x18000000 {
+        	compatible = "rtk_rtk299s-tmu";
+        	reg = <0x18000000 0x200
+        	       0x18000200 0x200>;
+        	status = "okay";
+        };
+
+        rtk_monitor@0x18000000 {
+                compatible = "rtk_monitor";
+                status = "okay";
+        };
+
+	emmc@0x18010800 {
+		compatible = "realtek,rtk-emmc";
+		reg = <0x18010800 0x400>;
+		interrupts = <0 18 4>;
+	};
+
+	sdio@0x18010c00 {
+		compatible = "realtek,rtk-sdio";
+		reg = <0x18010c00 0x400>;
+		interrupts = <0 18 4>;
+		bus-width = <4>;
+		max-frequency = <37000000>;
+		cap-sd-highspeed;
+		cap-mmc-hw-reset;
+		broken-cd;
+	};
+
+//        clock-controller@0x18000350 {
+//               compatible = "realtek,rtd299s-clock";
+//                reg = <0x18000350 0x4b0>;
+//                #clock-cells = <1>;
+//        };
+
+};
