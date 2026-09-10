@@ -62,6 +62,7 @@ The emulation accurately reflects the silicon memory map extracted from Realtek 
 | `0x18080000` | 4 KB | SCU | System Control Unit |
 | `0x18081000` | 4 KB | GIC-400 Distributor | GICD (256 INTIDs) |
 | `0x18082000` | 8 KB | GIC-400 CPU Interface| GICC |
+| `0x3E000000` | 8 MB | Simple Framebuffer | 1920x1080 @ 32bpp ARGB8888 (DRAM Carveout, priority 1) |
 
 ---
 
@@ -141,19 +142,55 @@ PSR=600001d3 -ZC- A S svc32
 
 ---
 
-## 6. Roadmap
+## 6. Hardware Virtual Display Pipeline & Simple-Framebuffer
+
+The machine model implements a virtual display pipeline backed by an 8 MB contiguous DRAM carveout and QEMU `GraphicConsole`:
+
+- **Physical Base**: `0x3E000000` (offset 992 MB in 1024 MB physical DRAM space).
+- **Resolution**: `1920x1080` @ 32 bpp (`ARGB8888` / `XRGB8888`).
+- **Stride**: `7680` bytes (`1920 * 4`).
+- **Buffer Size**: `8,294,400` bytes (carved out as 8 MB `0x00800000` memory region with priority 1 overlay).
+- **Device Tree Node**:
+  ```dts
+  framebuffer@3e000000 {
+      compatible = "simple-framebuffer";
+      reg = <0x3e000000 0x00800000>;
+      width = <1920>;
+      height = <1080>;
+      stride = <7680>;
+      format = "a8r8g8b8";
+      status = "okay";
+  };
+  ```
+
+### Graphical Display Backends
+
+```bash
+# Launch with native macOS Darwin Cocoa GUI window (Retina 1080p scaled)
+DISPLAY_BACKEND=cocoa ./scripts/run_qemu.sh
+
+# Launch with VNC server on port 5900
+DISPLAY_BACKEND="vnc=:0" ./scripts/run_qemu.sh
+
+# Headless / CI simulation (default)
+./scripts/run_qemu.sh
+```
+
+---
+
+## 7. Roadmap
 
 - [x] Bare-metal SoC model with Cortex-A53 quad-core and AArch32 support.
 - [x] ARM GIC-400 interrupt controller wiring (256 IRQs).
 - [x] 16550A UART0 console with 4-byte stride.
 - [x] Realtek TC0..TC7 27 MHz timer controller & hardware watchdog.
 - [x] Standalone bare-metal diagnostic validation payload.
-- [ ] Connect QEMU `sysbus-sdhci` at `0x18010800` for raw Android `/system` and `/vendor` eMMC image mounting.
-- [ ] Add `simple-framebuffer` display aperture at `0x3E000000` for graphical VNC / Cocoa window rendering.
+- [x] Connect QEMU `sysbus-sdhci` at `0x18010800` for raw Android `/system` and `/vendor` eMMC image mounting.
+- [x] Add `simple-framebuffer` display aperture at `0x3E000000` for graphical VNC / Cocoa window rendering.
 - [ ] Automated kernel cross-compilation harness for Linux 4.4 `zImage`.
 
 ---
 
-## 7. License
+## 8. License
 
 This project is licensed under the **GNU General Public License v2.0 or later** (`GPL-2.0-or-later`), consistent with QEMU licensing.

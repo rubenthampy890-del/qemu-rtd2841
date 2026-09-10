@@ -35,7 +35,7 @@ QEMU_ARGS=(
     -smp 4
     -dtb "${DTB}"
     -serial stdio
-    -display none
+    -display "${DISPLAY_BACKEND:-none}"
 )
 
 if [ -n "${IMAGE}" ] && [ -f "${IMAGE}" ]; then

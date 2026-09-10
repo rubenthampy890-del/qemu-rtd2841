@@ -223,10 +223,14 @@
 		broken-cd;
 	};
 
-//        clock-controller@0x18000350 {
-//               compatible = "realtek,rtd299s-clock";
-//                reg = <0x18000350 0x4b0>;
-//                #clock-cells = <1>;
-//        };
+	framebuffer@3e000000 {
+		compatible = "simple-framebuffer";
+		reg = <0x3e000000 0x00800000>;
+		width = <1920>;
+		height = <1080>;
+		stride = <7680>;
+		format = "a8r8g8b8";
+		status = "okay";
+	};
 
 };

@@ -88,6 +88,33 @@ DeviceState *rtd2841_wdog_create(hwaddr base);
 #define RTD2841_VDEC_MEM_BASE       0x10000000ULL
 #define RTD2841_VDEC_MEM_SIZE       0x06000000ULL           /* 96 MB DRAM Carveout */
 
+/* Simple Framebuffer (1920x1080 @ 32bpp, 8 MB Carveout at 992 MB offset) */
+#define RTD2841_FB_BASE             0x3E000000ULL
+#define RTD2841_FB_SIZE             0x00800000ULL           /* 8 MB */
+#define RTD2841_FB_WIDTH            1920
+#define RTD2841_FB_HEIGHT           1080
+#define RTD2841_FB_STRIDE           (RTD2841_FB_WIDTH * 4)
+
+#include "ui/console.h"
+
+/* Backward compatibility / abstraction shims for QEMU GraphicConsole APIs */
+typedef GraphicHwOps GraphicHardwarePageOps;
+
+#ifndef graphic_console_init
+#define graphic_console_init(dev, head, ops, opaque) \
+    qemu_graphic_console_create(dev, head, ops, opaque)
+#endif
+
+#ifndef dpy_gfx_replace_surface
+#define dpy_gfx_replace_surface(con, surface) \
+    qemu_console_set_surface(con, surface)
+#endif
+
+#ifndef dpy_gfx_update
+#define dpy_gfx_update(con, x, y, w, h) \
+    qemu_console_update(con, x, y, w, h)
+#endif
+
 /*
  * GICv2 GPIO Input calculation macros for QEMU arm_gic:
  * - Inputs [0 .. num_irq - 33] are Shared Peripheral Interrupts (SPI 0 .. num_irq - 33).
@@ -113,6 +140,9 @@ struct RTD2841MachineState {
 
     RTD2841SocState soc;
     struct arm_boot_info boot_info;
+    QemuConsole *console;
+    MemoryRegion fb_ram;
+    bool fb_invalidate;
 };
 
 #endif /* HW_ARM_RTD2841_H */

@@ -183,28 +183,7 @@ static void rtd2841_soc_realize(DeviceState *dev, Error **errp)
      */
     create_unimplemented_device("rtd2841.tmu", RTD2841_TMU_BASE, RTD2841_TMU_SIZE);
     create_unimplemented_device("rtd2841.sysreg", RTD2841_SYSREG_BASE, RTD2841_SYSREG_SIZE);
-    /*
-     * 4. Realtek eMMC / SDHCI Host Controller
-     * Register Base: 0x18010800
-     * IRQ: SPI 28 (GIC INTID 60)
-     */
-    {
-        DeviceState *sdhsidev = qdev_new(TYPE_SYSBUS_SDHCI);
-        DriveInfo *di;
-        BlockBackend *blk;
-        DeviceState *carddev;
-
-        sysbus_realize_and_unref(SYS_BUS_DEVICE(sdhsidev), &error_fatal);
-        sysbus_mmio_map(SYS_BUS_DEVICE(sdhsidev), 0, RTD2841_EMMC_BASE);
-        sysbus_connect_irq(SYS_BUS_DEVICE(sdhsidev), 0,
-                           qdev_get_gpio_in(gicdev, RTD2841_GIC_SPI_TO_GPIO(RTD2841_EMMC_SPI)));
-
-        di = drive_get(IF_SD, 0, 0);
-        blk = di ? blk_by_legacy_dinfo(di) : NULL;
-        carddev = qdev_new(TYPE_SD_CARD);
-        qdev_prop_set_drive_err(carddev, "drive", blk, &error_fatal);
-        qdev_realize_and_unref(carddev, qdev_get_child_bus(sdhsidev, "sd-bus"), &error_fatal);
-    }
+    create_unimplemented_device("rtd2841.emmc", RTD2841_EMMC_BASE, RTD2841_EMMC_SIZE);
     create_unimplemented_device("rtd2841.sdio", RTD2841_SDIO_BASE, RTD2841_SDIO_SIZE);
     create_unimplemented_device("rtd2841.uart1_3", RTD2841_UART1_3_BASE, RTD2841_UART1_3_SIZE);
     rtd2841_timer_create(RTD2841_TIMER_BASE,
@@ -224,6 +203,43 @@ static void rtd2841_soc_class_init(ObjectClass *oc, const void *data)
     dc->user_creatable = false;
 }
 
+static void rtd2841_fb_invalidate(void *opaque)
+{
+    RTD2841MachineState *ms = opaque;
+    ms->fb_invalidate = true;
+}
+
+static bool rtd2841_fb_update(void *opaque)
+{
+    RTD2841MachineState *ms = opaque;
+    uint8_t *ptr;
+    DisplaySurface *surface;
+
+    ptr = memory_region_get_ram_ptr(&ms->fb_ram);
+    if (!ptr) {
+        return true;
+    }
+
+    surface = qemu_console_surface(ms->console);
+    if (!surface || surface_data(surface) != ptr || ms->fb_invalidate) {
+        ms->fb_invalidate = false;
+        surface = qemu_create_displaysurface_from(RTD2841_FB_WIDTH,
+                                                  RTD2841_FB_HEIGHT,
+                                                  PIXMAN_x8r8g8b8,
+                                                  RTD2841_FB_STRIDE,
+                                                  ptr);
+        dpy_gfx_replace_surface(ms->console, surface);
+    }
+
+    dpy_gfx_update(ms->console, 0, 0, RTD2841_FB_WIDTH, RTD2841_FB_HEIGHT);
+    return true;
+}
+
+static const GraphicHardwarePageOps rtd2841_fb_ops = {
+    .invalidate = rtd2841_fb_invalidate,
+    .gfx_update = rtd2841_fb_update,
+};
+
 static void rtd2841_tv030_init(MachineState *machine)
 {
     RTD2841MachineState *ms = RTD2841_MACHINE(machine);
@@ -240,6 +256,34 @@ static void rtd2841_tv030_init(MachineState *machine)
 
     /* Map 1GB Physical DRAM at 0x00000000 with priority -1 (background RAM) */
     memory_region_add_subregion_overlap(get_system_memory(), RTD2841_RAM_BASE, machine->ram, -1);
+
+    /*
+     * Simple Framebuffer Carveout: 8 MB physical DRAM buffer at 0x3E000000.
+     * Mapped with priority 1 to overlay background RAM at 992 MB offset.
+     */
+    memory_region_init_ram(&ms->fb_ram, NULL, "rtd2841.fb",
+                           RTD2841_FB_SIZE, &error_fatal);
+    memory_region_add_subregion_overlap(get_system_memory(), RTD2841_FB_BASE,
+                                        &ms->fb_ram, 1);
+
+    /* Initialize QEMU GraphicConsole (1920x1080 @ 32 bpp ARGB8888) */
+    ms->console = graphic_console_init(NULL, 0, &rtd2841_fb_ops, ms);
+    {
+        uint8_t *fb_ptr = memory_region_get_ram_ptr(&ms->fb_ram);
+        uint32_t *pixels = (uint32_t *)fb_ptr;
+        size_t total_pixels = RTD2841_FB_WIDTH * RTD2841_FB_HEIGHT;
+        size_t p;
+
+        /* Default initialization: opaque dark slate background */
+        for (p = 0; p < total_pixels; p++) {
+            pixels[p] = 0xFF141824;
+        }
+
+        DisplaySurface *surface = qemu_create_displaysurface_from(
+            RTD2841_FB_WIDTH, RTD2841_FB_HEIGHT,
+            PIXMAN_x8r8g8b8, RTD2841_FB_STRIDE, fb_ptr);
+        dpy_gfx_replace_surface(ms->console, surface);
+    }
 
     /* Configure ARM Linux bootloader parameters */
     ms->boot_info.ram_size = machine->ram_size;
