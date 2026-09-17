@@ -183,7 +183,28 @@ static void rtd2841_soc_realize(DeviceState *dev, Error **errp)
      */
     create_unimplemented_device("rtd2841.tmu", RTD2841_TMU_BASE, RTD2841_TMU_SIZE);
     create_unimplemented_device("rtd2841.sysreg", RTD2841_SYSREG_BASE, RTD2841_SYSREG_SIZE);
-    create_unimplemented_device("rtd2841.emmc", RTD2841_EMMC_BASE, RTD2841_EMMC_SIZE);
+    /*
+     * Realtek eMMC / SDHCI Host Controller
+     * Register Base: 0x18010800 (RTD2841_EMMC_BASE)
+     * IRQ: SPI 28 (GIC INTID 60)
+     */
+    {
+        DeviceState *sdhsidev = qdev_new(TYPE_SYSBUS_SDHCI);
+        DriveInfo *di;
+        BlockBackend *blk;
+        DeviceState *carddev;
+
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(sdhsidev), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(sdhsidev), 0, RTD2841_EMMC_BASE);
+        sysbus_connect_irq(SYS_BUS_DEVICE(sdhsidev), 0,
+                           qdev_get_gpio_in(gicdev, RTD2841_GIC_SPI_TO_GPIO(RTD2841_EMMC_SPI)));
+
+        di = drive_get(IF_SD, 0, 0);
+        blk = di ? blk_by_legacy_dinfo(di) : NULL;
+        carddev = qdev_new(TYPE_SD_CARD);
+        qdev_prop_set_drive_err(carddev, "drive", blk, &error_fatal);
+        qdev_realize_and_unref(carddev, qdev_get_child_bus(sdhsidev, "sd-bus"), &error_fatal);
+    }
     create_unimplemented_device("rtd2841.sdio", RTD2841_SDIO_BASE, RTD2841_SDIO_SIZE);
     create_unimplemented_device("rtd2841.uart1_3", RTD2841_UART1_3_BASE, RTD2841_UART1_3_SIZE);
     rtd2841_timer_create(RTD2841_TIMER_BASE,
@@ -221,8 +242,7 @@ static bool rtd2841_fb_update(void *opaque)
     }
 
     surface = qemu_console_surface(ms->console);
-    if (!surface || surface_data(surface) != ptr || ms->fb_invalidate) {
-        ms->fb_invalidate = false;
+    if (!surface || surface_data(surface) != ptr) {
         surface = qemu_create_displaysurface_from(RTD2841_FB_WIDTH,
                                                   RTD2841_FB_HEIGHT,
                                                   PIXMAN_x8r8g8b8,
@@ -231,6 +251,7 @@ static bool rtd2841_fb_update(void *opaque)
         dpy_gfx_replace_surface(ms->console, surface);
     }
 
+    ms->fb_invalidate = false;
     dpy_gfx_update(ms->console, 0, 0, RTD2841_FB_WIDTH, RTD2841_FB_HEIGHT);
     return true;
 }

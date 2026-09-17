@@ -38,6 +38,14 @@ QEMU_ARGS=(
     -display "${DISPLAY_BACKEND:-none}"
 )
 
+# Attach eMMC / SD image to SDHCI host controller if present
+if [ -n "${SD_IMAGE:-}" ] && [ -f "${SD_IMAGE}" ]; then
+    echo "[+] Attaching eMMC/SD storage image via SDHCI: ${SD_IMAGE}"
+    QEMU_ARGS+=(-drive "file=${SD_IMAGE},format=raw,if=sd")
+elif [ -f "${REPO_ROOT}/../tcl-firmware-re/staging/emmc.raw" ]; then
+    QEMU_ARGS+=(-drive "file=${REPO_ROOT}/../tcl-firmware-re/staging/emmc.raw,format=raw,if=sd")
+fi
+
 if [ -n "${IMAGE}" ] && [ -f "${IMAGE}" ]; then
     case "${IMAGE}" in
         *.bin)
