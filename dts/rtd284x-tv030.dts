@@ -132,9 +132,22 @@
 
 	};
 
-//	memory {
-//		reg = <0x00000000 0x10000000>; /* 512MB */
-//	};
+	memory@0 {
+		device_type = "memory";
+		reg = <0x00000000 0x20000000>,
+		      <0x20000000 0x20000000>;
+	};
+
+        reserved-memory {
+                #address-cells = <1>;
+                #size-cells = <1>;
+                ranges;
+
+                fb_reserved: framebuffer@3e000000 {
+                        reg = <0x3e000000 0x00800000>;
+                        no-map;
+                };
+        };
 
         firmware {
                 optee {
@@ -144,7 +157,29 @@
         };
 
 	chosen {
-		bootargs ="androidboot.console=ttyS0 console=ttyS0,115200 envp=100700 flashtype=emmc mmcparts=rtkemmc:3358720k,524288k(/system),1572864k(/data),524288k(/cache),16384k(/res) earlyprintk ac_on ac_on root=/dev/mmcblk0p1 rootfstype=ext4 ro rootwait";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+		bootargs ="androidboot.console=ttyS0 console=ttyS0,115200 ignore_loglevel initcall_debug flashtype=emmc earlyprintk root=/dev/mmcblk0p1 rootfstype=ext4 rw rootwait";
+		framebuffer0: framebuffer@3e000000 {
+			compatible = "simple-framebuffer";
+			reg = <0x3e000000 0x00800000>;
+			width = <1920>;
+			height = <1080>;
+			stride = <7680>;
+			format = "a8r8g8b8";
+			status = "okay";
+		};
+	};
+
+
+	timer {
+		compatible = "arm,armv8-timer", "arm,armv7-timer";
+		interrupts = <1 13 0xf08>,
+			     <1 14 0xf08>,
+			     <1 11 0xf08>,
+			     <1 10 0xf08>;
+		clock-frequency = <27000000>;
 	};
 
 	gic:interrupt-controller@0x18081000 {
@@ -158,7 +193,7 @@
 	uart0: serial@18062300 {
 		compatible = "realtek,rtd29xx-uart";
 		reg = <0x18062300 0x1000>;
-		interrupts = <0 25>;
+		interrupts = <0 25 4>;
 	};
 
 	gpu@0x18040000 {
@@ -207,9 +242,12 @@
         };
 
 	emmc@0x18010800 {
-		compatible = "realtek,rtk-emmc";
+		compatible = "generic-sdhci", "realtek,rtd2841-sdhci", "realtek,rtk-emmc";
 		reg = <0x18010800 0x400>;
 		interrupts = <0 18 4>;
+		bus-width = <4>;
+		clock-frequency = <50000000>;
+		status = "okay";
 	};
 
 	sdio@0x18010c00 {
@@ -223,14 +261,10 @@
 		broken-cd;
 	};
 
-	framebuffer@3e000000 {
-		compatible = "simple-framebuffer";
-		reg = <0x3e000000 0x00800000>;
-		width = <1920>;
-		height = <1080>;
-		stride = <7680>;
-		format = "a8r8g8b8";
-		status = "okay";
-	};
+//        clock-controller@0x18000350 {
+//               compatible = "realtek,rtd299s-clock";
+//                reg = <0x18000350 0x4b0>;
+//                #clock-cells = <1>;
+//        };
 
 };

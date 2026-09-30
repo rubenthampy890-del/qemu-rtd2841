@@ -179,8 +179,10 @@ static void rtd2841_soc_realize(DeviceState *dev, Error **errp)
     /*
      * 4. Stub hardware peripheral apertures
      * Realtek RBUS memory space covers internal peripheral registers.
-     * Stubbed blocks satisfy kernel/firmware initialization probes.
+     * We map a comprehensive 128MB background aperture (0x18000000-0x20000000)
+     * at priority -1000 so unmodeled register reads return 0 without raising bus aborts.
      */
+    create_unimplemented_device("rtd2841.soc_peripherals", 0x18000000, 0x08000000);
     create_unimplemented_device("rtd2841.tmu", RTD2841_TMU_BASE, RTD2841_TMU_SIZE);
     create_unimplemented_device("rtd2841.sysreg", RTD2841_SYSREG_BASE, RTD2841_SYSREG_SIZE);
     /*

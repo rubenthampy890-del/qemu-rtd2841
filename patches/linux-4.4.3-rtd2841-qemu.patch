@@ -1,0 +1,228 @@
+diff --git a/arch/arm/boot/dts/rtd284x-tv030.dts b/arch/arm/boot/dts/rtd284x-tv030.dts
+index e69de29b..c2841001 100644
+--- a/arch/arm/boot/dts/rtd284x-tv030.dts
++++ b/arch/arm/boot/dts/rtd284x-tv030.dts
+@@ -132,10 +132,23 @@
+ 
+ 	};
+ 
+-	memory@0 {
+-		device_type = "memory";
+-		reg = <0x00000000 0x20000000>,
+-		      <0x20000000 0x20000000>;
+-	};
++	memory@0 {
++		device_type = "memory";
++		reg = <0x00000000 0x20000000>,
++		      <0x20000000 0x20000000>;
++	};
+ 
++        reserved-memory {
++                #address-cells = <1>;
++                #size-cells = <1>;
++                ranges;
++
++                fb_reserved: framebuffer@3e000000 {
++                        reg = <0x3e000000 0x00800000>;
++                        no-map;
++                };
++        };
++
+         firmware {
+                 optee {
+                         compatible = "linaro,optee-tz";
+@@ -144,9 +157,22 @@
+         };
+ 
+ 	chosen {
+-		bootargs ="androidboot.console=ttyS0 console=ttyS0,115200 envp=100700 flashtype=emmc mmcparts=rtkemmc:3358720k,524288k(/system),1572864k(/data),524288k(/cache),16384k(/res) earlyprintk ac_on ac_on root=/dev/mmcblk0p1 rootfstype=ext4 ro rootwait";
++		#address-cells = <1>;
++		#size-cells = <1>;
++		ranges;
++		bootargs ="androidboot.console=ttyS0 console=ttyS0,115200 flashtype=emmc earlyprintk root=/dev/mmcblk0p1 rootfstype=ext4 rw rootwait";
++		framebuffer0: framebuffer@3e000000 {
++			compatible = "simple-framebuffer";
++			reg = <0x3e000000 0x00800000>;
++			width = <1920>;
++			height = <1080>;
++			stride = <7680>;
++			format = "a8r8g8b8";
++			status = "okay";
++		};
+ 	};
+ 
++	timer {
++		compatible = "arm,armv8-timer", "arm,armv7-timer";
++		interrupts = <1 13 0xf08>,
++			     <1 14 0xf08>,
++			     <1 11 0xf08>,
++			     <1 10 0xf08>;
++		clock-frequency = <27000000>;
++	};
+diff --git a/arch/arm/mach-rtd284x/timer.c b/arch/arm/mach-rtd284x/timer.c
+index 2149d42c..62482d4f 100644
+--- a/arch/arm/mach-rtd284x/timer.c
++++ b/arch/arm/mach-rtd284x/timer.c
+@@ -451,5 +451,6 @@ void rtk_timer_init(void)
+     arch_timer_dev_register(TIMER_CLOCK, ppi);
+ #endif
+ #endif
++    clocksource_probe();
+ }
+ 
+diff --git a/drivers/irqchip/irq-gic.c b/drivers/irqchip/irq-gic.c
+index 716e9c62..06f35885 100755
+--- a/drivers/irqchip/irq-gic.c
++++ b/drivers/irqchip/irq-gic.c
+@@ -1042,9 +1042,37 @@ static const struct irq_domain_ops gic_irq_domain_hierarchy_ops = {
+ 	.free = irq_domain_free_irqs_top,
+ };
+ 
++static int gic_irq_domain_xlate(struct irq_domain *d,
++				struct device_node *controller,
++				const u32 *intspec, unsigned int intsize,
++				unsigned long *out_hwirq, unsigned int *out_type)
++{
++	if (to_of_node(d->fwnode) && to_of_node(d->fwnode) != controller)
++		return -EINVAL;
++	if (intsize < 3) {
++		if (intsize == 2) {
++			*out_hwirq = intspec[0] + 32;
++			*out_type = intspec[1] & IRQ_TYPE_SENSE_MASK;
++			return 0;
++		}
++		return -EINVAL;
++	}
++
++	/* Get the interrupt number and add 16 to skip over SGIs */
++	*out_hwirq = intspec[1] + 16;
++
++	/* For SPIs, we need to add 16 more to get the GIC irq ID number */
++	if (!intspec[0])
++		*out_hwirq += 16;
++
++	*out_type = intspec[2] & IRQ_TYPE_SENSE_MASK;
++	return 0;
++}
++
+ static const struct irq_domain_ops gic_irq_domain_ops = {
+ 	.map = gic_irq_domain_map,
+ 	.unmap = gic_irq_domain_unmap,
++	.xlate = gic_irq_domain_xlate,
+ };
+ 
+ static void __init __gic_init_bases(unsigned int gic_nr, int irq_start,
+@@ -1103,7 +1131,7 @@ static void __init __gic_init_bases(unsigned int gic_nr, int irq_start,
+ 		gic_irqs = 1020;
+ 	gic->gic_irqs = gic_irqs;
+ 
+-	if (handle) {		/* DT/ACPI */
++	if (handle && irq_start == -1) {		/* DT/ACPI linear */
+ 		gic->domain = irq_domain_create_linear(handle, gic_irqs,
+ 						       &gic_irq_domain_hierarchy_ops,
+ 						       gic);
+@@ -1130,7 +1158,7 @@ static void __init __gic_init_bases(unsigned int gic_nr, int irq_start,
+ 			irq_base = irq_start;
+ 		}
+ 
+-		gic->domain = irq_domain_add_legacy(NULL, gic_irqs, irq_base,
++		gic->domain = irq_domain_add_legacy(to_of_node(handle), gic_irqs, irq_base,
+ 					hwirq_base, &gic_irq_domain_ops, gic);
+ 	}
+ 
+@@ -1297,8 +1325,7 @@ int __init realtek_gic_of_init(struct device_node *node, struct device_node *par
+ 	if (of_property_read_u32(node, "cpu-offset", &percpu_offset))
+ 		percpu_offset = 0;
+ 
+-//	__gic_init_bases(gic_cnt, -1, dist_base, cpu_base, percpu_offset, &node->fwnode);
+-	__gic_init_bases(gic_cnt, -1, dist_base, cpu_base, percpu_offset, NULL); // FIXME: about the NULL
++	__gic_init_bases(gic_cnt, 16, dist_base, cpu_base, percpu_offset, &node->fwnode);
+ 	if (!gic_cnt)
+ 		gic_init_physaddr(node);
+ 
+diff --git a/drivers/rtk_kdriver/rtk_8168.c b/drivers/rtk_kdriver/rtk_8168.c
+index b6a7c918..f3d073b4 100755
+--- a/drivers/rtk_kdriver/rtk_8168.c
++++ b/drivers/rtk_kdriver/rtk_8168.c
+@@ -5084,8 +5084,8 @@ out:
+ err_sysfs_create_group:
+ 	kobject_put(eth_kobj);
+ err_kobject_create:
+-err_out_msi:
+ 	netif_napi_del(&tp->napi);
++err_out_msi:
+ 	free_netdev(ndev);
+ 	/*rtl_disable_msi(pdev, tp); */
+ 	goto out;
+diff --git a/mm/pageremap.c b/mm/pageremap.c
+index a013a835..31dda7ea 100755
+--- a/mm/pageremap.c
++++ b/mm/pageremap.c
+@@ -953,8 +953,8 @@ void dvr_free(const void *virt_addr)
+ 	}
+ 	value = rtk_record_lookup_ex(phys_addr, &ptr, true);
+ 	if ((value & 0xf0000000) != RTK_SIGNATURE) {
+-		pr_err("remap: free memory (%lx/%p) signature error...\n", phys_addr, virt_addr);
+-		BUG();
++		pr_err("remap: free memory (%lx/%p) signature error... ignoring\n", phys_addr, virt_addr);
++		return;
+ 	} else {
+ 		priv = ptr->priv;
+ 
+@@ -972,6 +972,7 @@ void dvr_free(const void *virt_addr)
+ 			} else {
+ 				count = value & 0x00ffffff;
+ 			}
++
+ 			if (is_vmalloc_addr(virt_addr)) {
+ 				dvr_unmap_memory((void *)virt_addr, count << PAGE_SHIFT);
+ 			}
+@@ -987,7 +988,7 @@ void dvr_free(const void *virt_addr)
+ 				free_contiguous_memory(pfn_to_page(phys_addr >> PAGE_SHIFT), count);
+ 			}
+ 		} else {
+-			BUG();
++			return;
+ 		}
+ 	}
+ }
+@@ -1043,8 +1044,8 @@ void dvr_free_page(const struct page *page)
+ 	phys_addr = page_to_pfn(page) << PAGE_SHIFT;
+ 	value = rtk_record_lookup_ex(phys_addr, &ptr, true);
+ 	if ((value & 0xf0000000) != RTK_SIGNATURE) {
+-		pr_err("remap: free memory (%lx) signature error...\n", phys_addr);
+-		BUG();
++		pr_err("remap: free memory (%lx) signature error... ignoring\n", phys_addr);
++		return;
+ 	} else {
+ 		if (need_debug_cma_deferfree()) {
+ 			rtk_record_tag_set(ptr, RTK_RECORD_TAG_DEFER_FREE);
+@@ -1069,7 +1070,7 @@ void dvr_free_page(const struct page *page)
+ 				free_contiguous_memory(pfn_to_page(phys_addr >> PAGE_SHIFT), count);
+ 			}
+ 		} else {
+-			BUG();
++			return;
+ 		}
+ 	}
+ }
+@@ -1135,8 +1136,8 @@ void dvr_free_page_mesg(const struct page *page)
+ 	phys_addr = page_to_pfn(page) << PAGE_SHIFT;
+ 	value = rtk_record_lookup_ex(phys_addr, &ptr, true);
+ 	if ((value & 0xf0000000) != RTK_SIGNATURE) {
+-		pr_err("remap: free memory (%lx) signature error...\n", phys_addr);
+-		BUG();
++		pr_err("remap: free memory (%lx) signature error... ignoring\n", phys_addr);
++		return;
+ 	} else {
+ 		caller = (char *)ptr->caller;
+ 		if (need_debug_cma_deferfree()) {
+@@ -1164,7 +1165,7 @@ void dvr_free_page_mesg(const struct page *page)
+ 			if(caller)
+ 				kfree((void *)caller);
+ 		} else {
+-			BUG();
++			return;
+ 		}
+ 	}
+ }

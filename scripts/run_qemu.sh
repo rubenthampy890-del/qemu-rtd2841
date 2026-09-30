@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Resolve QEMU binary: environment variable, local build, or system PATH
+# Resolve QEMU binary
 if [ -n "${QEMU_BIN:-}" ] && [ -x "${QEMU_BIN}" ]; then
     QEMU="${QEMU_BIN}"
 elif [ -f "${REPO_ROOT}/../tcl-firmware-re/qemu/build/qemu-system-aarch64" ]; then
@@ -17,17 +17,21 @@ elif [ -f "${REPO_ROOT}/qemu/build/qemu-system-aarch64" ]; then
 elif command -v qemu-system-aarch64 >/dev/null 2>&1; then
     QEMU="$(command -v qemu-system-aarch64)"
 else
-    echo "[-] Error: qemu-system-aarch64 not found. Build QEMU with the rtd2841 patch or set QEMU_BIN." >&2
+    echo "[-] Error: qemu-system-aarch64 not found. Set QEMU_BIN to the compiled QEMU binary." >&2
     exit 1
 fi
 
-DTB="${REPO_ROOT}/dts/rtd284x-tv030.dtb"
-IMAGE="${1:-${REPO_ROOT}/tests/firmware_test.bin}"
-
-if [ ! -f "${DTB}" ]; then
-    echo "[-] Error: Device tree blob not found at ${DTB}" >&2
+# Resolve Device Tree Blob
+if [ -f "${REPO_ROOT}/dts/rtd284x-tv030.dtb" ]; then
+    DTB="${REPO_ROOT}/dts/rtd284x-tv030.dtb"
+elif [ -f "${REPO_ROOT}/output/kernel/rtd284x-tv030.dtb" ]; then
+    DTB="${REPO_ROOT}/output/kernel/rtd284x-tv030.dtb"
+else
+    echo "[-] Error: Device tree blob not found." >&2
     exit 1
 fi
+
+IMAGE="${1:-}"
 
 QEMU_ARGS=(
     -M rtd2841-tv030
@@ -35,34 +39,45 @@ QEMU_ARGS=(
     -smp 4
     -dtb "${DTB}"
     -serial stdio
-    -display "${DISPLAY_BACKEND:-none}"
+    -display "${DISPLAY_BACKEND:-cocoa}"
 )
 
-# Attach eMMC / SD image to SDHCI host controller if present
+# Attach composite eMMC image to SDHCI host controller if present
+EMMC_IMAGE=""
 if [ -n "${SD_IMAGE:-}" ] && [ -f "${SD_IMAGE}" ]; then
-    echo "[+] Attaching eMMC/SD storage image via SDHCI: ${SD_IMAGE}"
-    QEMU_ARGS+=(-drive "file=${SD_IMAGE},format=raw,if=sd")
+    EMMC_IMAGE="${SD_IMAGE}"
+elif [ -f "${REPO_ROOT}/staging/emmc.raw" ]; then
+    EMMC_IMAGE="${REPO_ROOT}/staging/emmc.raw"
 elif [ -f "${REPO_ROOT}/../tcl-firmware-re/staging/emmc.raw" ]; then
-    QEMU_ARGS+=(-drive "file=${REPO_ROOT}/../tcl-firmware-re/staging/emmc.raw,format=raw,if=sd")
+    EMMC_IMAGE="${REPO_ROOT}/../tcl-firmware-re/staging/emmc.raw"
+fi
+
+if [ -n "${EMMC_IMAGE}" ]; then
+    echo "[+] Attaching composite eMMC disk image via SDHCI: ${EMMC_IMAGE}"
+    QEMU_ARGS+=(-drive "file=${EMMC_IMAGE},format=raw,if=sd")
 fi
 
 if [ -n "${IMAGE}" ] && [ -f "${IMAGE}" ]; then
-    case "${IMAGE}" in
-        *.bin)
-            echo "[+] Loading raw firmware/bare-metal binary via -bios: ${IMAGE}"
-            QEMU_ARGS+=(-bios "${IMAGE}")
-            ;;
-        *)
-            echo "[+] Booting kernel image via -kernel: ${IMAGE}"
-            QEMU_ARGS+=(
-                -kernel "${IMAGE}"
-                -append "console=ttyS0,115200 earlyprintk root=/dev/mmcblk0p1 rw init=/init"
-            )
-            ;;
-    esac
+    filename="$(basename "${IMAGE}")"
+    if [[ "${filename}" =~ vmlinux || "${filename}" =~ zImage || "${filename}" =~ kernel ]]; then
+        echo "[+] Booting kernel image via -kernel: ${IMAGE}"
+        QEMU_ARGS+=(
+            -kernel "${IMAGE}"
+            -append "console=ttyS0,115200 earlyprintk root=/dev/mmcblk0p1 rw init=/init"
+        )
+    elif [[ "${filename}" == *.bin || "${filename}" == *.elf ]]; then
+        echo "[+] Loading raw firmware/bare-metal binary via -bios: ${IMAGE}"
+        QEMU_ARGS+=(-bios "${IMAGE}")
+    else
+        echo "[+] Booting kernel image via -kernel: ${IMAGE}"
+        QEMU_ARGS+=(
+            -kernel "${IMAGE}"
+            -append "console=ttyS0,115200 earlyprintk root=/dev/mmcblk0p1 rw init=/init"
+        )
+    fi
 else
     echo "[+] Running bare-metal SoC simulation loop with DTB: ${DTB}"
 fi
 
-echo "[*] Launching: ${QEMU} ${QEMU_ARGS[*]}"
+echo "[*] Launching QEMU RTD2841..."
 exec "${QEMU}" "${QEMU_ARGS[@]}"

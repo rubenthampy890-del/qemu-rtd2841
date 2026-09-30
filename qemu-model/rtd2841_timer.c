@@ -147,10 +147,19 @@ static void rtd2841_timer_start(RTD2841TimerState *s, int id,
 {
     ptimer_state *t = s->timer[id];
     bool periodic = (s->cr[id] & R_CR_PERIOD) != 0;
+    uint32_t count = s->tvr[id];
 
     ptimer_transaction_begin(t);
     if (reload_from_tvr) {
-        ptimer_set_count(t, s->tvr[id]);
+        if (count == 0) {
+            count = 0xFFFFFFFF;
+        }
+        ptimer_set_limit(t, count, 1);
+        ptimer_set_count(t, count);
+    } else {
+        if (ptimer_get_count(t) == 0) {
+            ptimer_set_count(t, count ? count : 0xFFFFFFFF);
+        }
     }
     ptimer_run(t, periodic ? 0 : 1);
     ptimer_transaction_commit(t);
@@ -210,17 +219,27 @@ static void rtd2841_timer_write(void *opaque, hwaddr addr, uint64_t val,
         {
             ptimer_state *t = s->timer[id];
             if (rtd2841_running(s, id)) {
-                uint64_t next = (uint64_t)val - ptimer_get_count(t);
-                next &= 0xFFFFFFFFULL;
+                uint64_t cur = ptimer_get_count(t);
+                uint64_t next;
+                if (val > cur) {
+                    next = val - cur;
+                } else if (val < cur) {
+                    next = (0x100000000ULL - cur) + val;
+                } else {
+                    next = 1;
+                }
+                if (next == 0) {
+                    next = 1;
+                }
 
                 ptimer_transaction_begin(t);
-                ptimer_set_limit(t, val, 0);
+                ptimer_set_limit(t, val ? val : 0xFFFFFFFF, 0);
                 ptimer_set_count(t, next);
                 ptimer_run(t, (s->cr[id] & R_CR_PERIOD) ? 0 : 1);
                 ptimer_transaction_commit(t);
             } else {
                 ptimer_transaction_begin(t);
-                ptimer_set_limit(t, val, 0);
+                ptimer_set_limit(t, val ? val : 0xFFFFFFFF, 0);
                 ptimer_transaction_commit(t);
             }
         }
