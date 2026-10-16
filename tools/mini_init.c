@@ -383,7 +383,21 @@ void _start(void) {
     paint_tcl_tv_display();
     my_syscall3(4, 1, (long)msg_paint_fb, sizeof(msg_paint_fb) - 1);
 
-    /* 8. Launch interactive root shell */
+    /* 8. Run interactive TV remote control session (receives Cocoa window keys) */
+    static const char str_fb_test[] = "/bin/fb_test";
+    static const char str_loop[] = "--loop";
+    static char *fb_argv[] = {(char*)str_fb_test, (char*)str_loop, 0};
+
+    long pid = my_syscall0(2 /* __NR_fork */);
+    if (pid == 0) {
+        my_syscall3(11 /* __NR_execve */, (long)str_fb_test, (long)fb_argv, (long)envp);
+        my_syscall1(1 /* __NR_exit */, 1);
+    }
+    if (pid > 0) {
+        my_syscall3(7 /* __NR_waitpid */, pid, 0, 0);
+    }
+
+    /* 9. Launch interactive root shell on exit */
     my_syscall3(4, 1, (long)msg_exec_sh, sizeof(msg_exec_sh) - 1);
     my_syscall3(11 /* __NR_execve */, (long)str_sh, (long)argv, (long)envp);
 

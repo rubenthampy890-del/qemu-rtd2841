@@ -37,6 +37,7 @@
 #include "system/blockdev.h"
 #include "hw/sd/sdhci.h"
 #include "hw/sd/sd.h"
+#include "ui/input.h"
 
 #if defined(QEMU_IN_TREE) || __has_include("hw/arm/rtd2841.h")
 #include "hw/arm/rtd2841.h"
@@ -263,6 +264,73 @@ static const GraphicHardwarePageOps rtd2841_fb_ops = {
     .gfx_update = rtd2841_fb_update,
 };
 
+static void rtd2841_kbd_event(DeviceState *dev, QemuConsole *src, QemuInputEvent *evt)
+{
+    (void)dev;
+    (void)src;
+    if (evt->type != INPUT_EVENT_KIND_KEY) {
+        return;
+    }
+    if (!evt->key.down) {
+        return;
+    }
+
+    int qcode = qemu_input_linux_to_qcode(evt->key.key);
+    char c = 0;
+    const char *seq = NULL;
+
+    switch (qcode) {
+    case Q_KEY_CODE_1: c = '1'; break;
+    case Q_KEY_CODE_2: c = '2'; break;
+    case Q_KEY_CODE_3: c = '3'; break;
+    case Q_KEY_CODE_4: c = '4'; break;
+    case Q_KEY_CODE_5: c = '5'; break;
+    case Q_KEY_CODE_6: c = '6'; break;
+    case Q_KEY_CODE_LEFT:
+    case Q_KEY_CODE_H:
+        seq = "\033[D";
+        break;
+    case Q_KEY_CODE_RIGHT:
+    case Q_KEY_CODE_L:
+        seq = "\033[C";
+        break;
+    case Q_KEY_CODE_UP:
+    case Q_KEY_CODE_K:
+        seq = "\033[A";
+        break;
+    case Q_KEY_CODE_DOWN:
+    case Q_KEY_CODE_J:
+        seq = "\033[B";
+        break;
+    case Q_KEY_CODE_RET:
+    case Q_KEY_CODE_KP_ENTER:
+        c = '\r';
+        break;
+    case Q_KEY_CODE_B: c = 'b'; break;
+    case Q_KEY_CODE_T: c = 't'; break;
+    case Q_KEY_CODE_C: c = 'c'; break;
+    case Q_KEY_CODE_Q: c = 'q'; break;
+    case Q_KEY_CODE_BACKSPACE: c = 0x7f; break;
+    default:
+        break;
+    }
+
+    Chardev *chr = serial_hd(0);
+    if (chr) {
+        if (seq) {
+            qemu_chr_be_write(chr, (const uint8_t *)seq, strlen(seq));
+        } else if (c) {
+            qemu_chr_be_write(chr, (const uint8_t *)&c, 1);
+        }
+    }
+}
+
+static const QemuInputHandler rtd2841_kbd_handler = {
+    .name  = "rtd2841-kbd",
+    .mask  = INPUT_EVENT_MASK_KEY,
+    .event = rtd2841_kbd_event,
+};
+
 static void rtd2841_tv030_init(MachineState *machine)
 {
     RTD2841MachineState *ms = RTD2841_MACHINE(machine);
@@ -307,6 +375,9 @@ static void rtd2841_tv030_init(MachineState *machine)
             PIXMAN_x8r8g8b8, RTD2841_FB_STRIDE, fb_ptr);
         dpy_gfx_replace_surface(ms->console, surface);
     }
+
+    /* Register Cocoa GUI Keyboard input handler (translates window keys to UART serial) */
+    (void)qemu_input_handler_register(NULL, &rtd2841_kbd_handler);
 
     /* Configure ARM Linux bootloader parameters */
     ms->boot_info.ram_size = machine->ram_size;
