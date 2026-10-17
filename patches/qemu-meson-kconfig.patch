@@ -1,0 +1,30 @@
+diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
+index 4445f16..bde3979 100644
+--- a/hw/arm/Kconfig
++++ b/hw/arm/Kconfig
+@@ -731,3 +731,13 @@ config AXIADO_EVK
+     default y
+     depends on TCG && ARM
+     select AXIADO_SOC
++
++config RTD2841
++    bool
++    default y
++    depends on TCG && AARCH64
++    select ARM_GIC
++    select SERIAL
++    select SERIAL_MM
++    select UNIMP
++    select PTIMER
+diff --git a/hw/arm/meson.build b/hw/arm/meson.build
+index bcc068d..ed08c03 100644
+--- a/hw/arm/meson.build
++++ b/hw/arm/meson.build
+@@ -34,6 +34,7 @@ arm_common_ss.add(when: 'CONFIG_RASPI', if_true: files(
+ arm_common_ss.add(when: 'CONFIG_STM32F100_SOC', if_true: files('stm32f100_soc.c'))
+ arm_common_ss.add(when: 'CONFIG_STM32F205_SOC', if_true: files('stm32f205_soc.c'))
+ arm_common_ss.add(when: 'CONFIG_STM32F405_SOC', if_true: files('stm32f405_soc.c'))
++arm_common_ss.add(when: 'CONFIG_RTD2841', if_true: files('rtd2841.c', 'rtd2841_timer.c'))
+ arm_common_ss.add(when: 'CONFIG_B_L475E_IOT01A', if_true: files('b-l475e-iot01a.c'))
+ arm_common_ss.add(when: 'CONFIG_STM32L4X5_SOC', if_true: files('stm32l4x5_soc.c'))
+ arm_common_ss.add(when: 'CONFIG_XLNX_ZYNQMP_ARM', if_true: files('xlnx-zynqmp.c', 'xlnx-zcu102.c'))
