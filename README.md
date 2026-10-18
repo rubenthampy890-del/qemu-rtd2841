@@ -167,14 +167,16 @@ The machine model implements a virtual display pipeline backed by an 8 MB contig
 
 ```bash
 # Launch with native macOS Darwin Cocoa GUI window (Retina 1080p scaled)
-DISPLAY_BACKEND=cocoa ./scripts/run_qemu.sh
+DISPLAY_BACKEND=cocoa ./scripts/run_qemu.sh tests/firmware_fb_test.bin
 
 # Launch with VNC server on port 5900
-DISPLAY_BACKEND="vnc=:0" ./scripts/run_qemu.sh
+DISPLAY_BACKEND="vnc=:0" ./scripts/run_qemu.sh tests/firmware_fb_test.bin
 
 # Headless / CI simulation (default)
-./scripts/run_qemu.sh
+./scripts/run_qemu.sh tests/firmware_fb_test.bin
 ```
+
+When running `tests/firmware_fb_test.bin`, the bare-metal payload renders 8 SMPTE color bars across the full 1920x1080 simple-framebuffer at `0x3E000000`, verifying the DRAM carveout and display pipeline end-to-end.
 
 ---
 

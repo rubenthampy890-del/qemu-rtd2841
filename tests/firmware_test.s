@@ -42,6 +42,35 @@ wait_loop:
     subs r6, r6, #1
     bne wait_loop
 
+    /* 3. Realtek SDHCI / eMMC Host Controller check at 0x18010800 */
+    ldr r8, =0x18010800
+    ldr r7, [r8, #0x24]       /* Read SDHC_PRNSTS (Present State Register) */
+    tst r7, #0x00010000       /* Test Bit 16: SDHC_CARD_PRESENT */
+    beq no_card
+
+    adr r1, card_detected_msg
+    bl print_str
+
+    /* Read Capabilities register at 0x40 */
+    ldr r9, [r8, #0x40]
+    adr r1, card_capa_msg
+    bl print_str
+    b 4f
+
+no_card:
+    adr r1, no_card_msg
+    bl print_str
+    b halt
+
+card_detected_msg:
+    .asciz "[+] Realtek eMMC / SDHCI Host Controller (0x18010800): CARD DETECTED (Bit 16 set in PRSNT_ST).\r\n"
+card_capa_msg:
+    .asciz "[+] Realtek eMMC / SDHCI Capabilities Register (0x18010840) verified without bus errors.\r\n"
+no_card_msg:
+    .asciz "[-] Realtek eMMC / SDHCI Host Controller (0x18010800): NO CARD DETECTED!\r\n"
+    .align 2
+
+4:
     bl print_pass
     b halt
 pass_msg:
