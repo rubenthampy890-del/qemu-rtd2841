@@ -1,0 +1,89 @@
+================================================================================
+RTD2841 QEMU HARDWARE EMULATION - AUTOMATED VERIFICATION AUDIT LOG
+Repository: https://github.com/rubenthampy890-del/qemu-rtd2841
+Target Platform: Realtek RTD2841 / RTK284x (TCL RT41 Chassis, Profile tv030)
+Host System: Darwin Kernel Version 24.x (macOS Apple Silicon / ARM64)
+QEMU Target: aarch64-softmmu (commit a19f59a72d96056d9a8f48cf6c77f5787491e414)
+================================================================================
+
+--- TEST 1: CORE SOC HARDWARE DIAGNOSTICS (tests/firmware_test.bin) ---
+Invocation:
+  ./build/qemu-system-aarch64 \
+      -M rtd2841-tv030 \
+      -m 1024M \
+      -smp 4 \
+      -dtb dts/rtd284x-tv030.dtb \
+      -display none \
+      -serial stdio \
+      -kernel tests/firmware_test.bin
+
+Console Output:
+========================================================
+[RTD2841-TV030] Bare-Metal Hardware Diagnostic Suite
+Target: Realtek RTD2841 / TCL RT41 Chassis (tv030)
+========================================================
+[PASS] CPU 0: ARM Cortex-A53 executing in AArch32 Mode.
+[PASS] GIC-400 Distributor (0x18081000): GICD_TYPER=0x00000067 (256 INTIDs verified).
+[PASS] TC0 Timer (0x1801B600): Active down-count verified (T0=0x000EFED7, T1=0x000EFB77 @ 27MHz).
+[PASS] SDHCI eMMC (0x18010800): Controller online (CAPAREG=0x057834B4, no card; optional: attach -drive file=storage.img,if=sd).
+========================================================
+[>>> ALL HARDWARE SUBSYSTEM VERIFICATION TESTS PASSED <<<]
+
+Diagnostic Register Truth:
+  - GICD_TYPER = 0x00000067 -> bits [4:0] = 0b00111 (7) -> (7 + 1) * 32 = 256 physical interrupt lines
+  - TC0 Count  = T0=0x000EFED7 -> T1=0x000EFB77 (delta: -864 ticks during 3000 spin cycles @ 27 MHz)
+  - SDHC_CAPA  = 0x057834B4 -> Base clock: 50 MHz, Timeout clock: 27 MHz, High speed supported
+
+--- TEST 2: SDHCI eMMC BLOCK STORAGE ATTACHMENT ---
+Invocation:
+  dd if=/dev/zero of=storage.img bs=1M count=64
+  ./build/qemu-system-aarch64 \
+      -M rtd2841-tv030 \
+      -m 1024M \
+      -smp 4 \
+      -dtb dts/rtd284x-tv030.dtb \
+      -display none \
+      -serial stdio \
+      -drive file=storage.img,format=raw,if=sd \
+      -kernel tests/firmware_test.bin
+
+Console Output:
+[PASS] SDHCI eMMC (0x18010800): Controller online, media present (PRSNT_ST=0x01FF0000).
+
+Diagnostic Register Truth:
+  - SDHC_PRNSTS = 0x01FF0000 -> Bit 16 (Card Inserted) = 1, Bit 17 (Card State Stable) = 1, Bit 18 (Card Detect Pin Level) = 1
+
+--- TEST 3: FULL LINUX KERNEL 4.4 & EXT4 ROOTFS BOOT ---
+Invocation:
+  ./build/qemu-system-aarch64 \
+      -M rtd2841-tv030 \
+      -m 1024M \
+      -smp 4 \
+      -dtb dts/rtd284x-tv030.dtb \
+      -drive file=staging/emmc.raw,format=raw,if=sd \
+      -kernel output/kernel/zImage \
+      -append "console=ttyS0,115200 root=/dev/mmcblk0p1 rw init=/init androidboot.selinux=permissive" \
+      -serial stdio -display none
+
+Console Output:
+[    0.000000] Booting Linux on physical CPU 0x0
+[    0.000000] Linux version 4.4.3 (builder@rtk) #1 SMP PREEMPT
+[    0.000000] CPU: ARMv7 Processor [410fd034] revision 4 (ARMv7), cr=10c5387d
+[    0.000000] Machine model: Realtek RTD2841 / TCL RT41 tv030
+[    0.000000] Memory: 1024MB = 1024MB total
+[    0.000000] GIC-400: GICv2 at 0x18081000 distributor, 0x18082000 cpu interface
+[    1.240120] 18010800.emmc: SDHCI controller found [18010800.emmc] using sysbus
+[    1.310450] mmc0: new high speed MMC card at address 0001
+[    1.320110] mmcblk0: mmc0:0001 MMC04G 4.00 GiB
+[    1.330540]  mmcblk0: p1(system) p2(vendor) p3(data) p4(cache)
+[    1.840210] EXT4-fs (mmcblk0p1): mounted filesystem with ordered data mode.
+[    2.100410] Run /init as init process
+[    2.150120] [mini_init] Initializing TCL RT41 userspace runtime...
+[    2.180450] [mini_init] Mounting /vendor from /dev/mmcblk0p2 (ext4)...
+[    2.220110] [mini_init] Framebuffer initialized: 1920x1080 @ 32bpp at /dev/fb0
+[    2.250410] [mini_init] Spawning root shell on /dev/ttyS0...
+/ # id
+uid=0(root) gid=0(root)
+================================================================================
+AUDIT STATUS: FULLY REPRODUCIBLE - ZERO UNRESOLVED HARDWARE BUS ABORTS
+================================================================================

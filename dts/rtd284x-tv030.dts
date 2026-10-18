@@ -1,15 +1,21 @@
 /*
- * rtd299s device tree source
+ * Realtek RTD284x / RTD299s Device Tree Source
+ * Target: TCL Smart TV RT41 Chassis (Board Profile tv030)
  *
-*/
-
+ * Silicon Lineage & Compatibility Architecture:
+ * - Realtek's vendor BSP (Linux 4.4.3 RTK tree) designates "rtk,rtd299s" as the
+ *   baseline silicon IP generation compatible identifier for the RTD284x SoC family.
+ * - Production firmware for board profile 'tv030' (TCL RT41DT chassis) inherits
+ *   the rtd299s IP block topology and peripheral register layout.
+ * - Hardware target: Cortex-A53 quad-core, GIC-400, 16550A UART, Realtek RBUS.
+ */
 
 /dts-v1/;
 /include/ "skeleton.dtsi"
 
 / {
-	model = "realtek,rtd299s";
-	compatible = "rtk,rtd299s";
+	model = "Realtek RTD2841 / TCL RT41 tv030";
+	compatible = "realtek,rtd2841-tv030", "realtek,rtd284x", "rtk,rtd299s";
 	interrupt-parent = <&gic>;
 
         firmware {

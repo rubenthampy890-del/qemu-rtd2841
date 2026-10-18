@@ -64,7 +64,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(RTD2841MachineState, RTD2841_MACHINE)
 #define RTD2841_SYSREG_SIZE         0x00000C00ULL           /* 3 KB: Clock, Reset, Pinmux (0x180004e4) */
 #define RTD2841_EMMC_BASE           0x18010800ULL
 #define RTD2841_EMMC_SIZE           0x00000400ULL           /* 1 KB */
-#define RTD2841_EMMC_SPI            28                      /* SPI 28 -> GIC INTID 60 */
+#define RTD2841_EMMC_SPI            18                      /* SPI 18 -> GIC INTID 50 */
 #define RTD2841_SDIO_BASE           0x18010C00ULL
 #define RTD2841_SDIO_SIZE           0x00000400ULL           /* 1 KB */
 #define RTD2841_UART1_3_BASE        0x1801B100ULL

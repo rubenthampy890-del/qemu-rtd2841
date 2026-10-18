@@ -299,7 +299,7 @@ static void paint_tcl_tv_display(void) {
 
     draw_string("HARDWARE EMULATION STATUS & INTERFACE MAPPINGS", 80, info_y + 20, 2, COLOR_WHITE, 0);
     draw_string("[+] UART Serial Port:  /dev/ttyS0 active at MMIO 0x1801b200 (115200 8N1) -> Connected to stdio", 80, info_y + 60, 1, COLOR_GREEN, 0);
-    draw_string("[+] GIC Interrupts:    GIC-400 v2 | Translation domain mapped (SPI 28 SDHCI, SPI 30 UART)", 80, info_y + 85, 1, COLOR_GREEN, 0);
+    draw_string("[+] GIC Interrupts:    GIC-400 v2 | Translation domain mapped (SPI 18 SDHCI, SPI 25 UART)", 80, info_y + 85, 1, COLOR_GREEN, 0);
     draw_string("[+] Display Pipeline:  Simple-Framebuffer MMIO base 0x3e000000 (1920x1080 @ 32bpp ARGB8888)", 80, info_y + 110, 1, COLOR_GREEN, 0);
     draw_string("[+] Storage Gateway:   Realtek generic-sdhci MMIO 0x18010800 -> /dev/mmcblk0 (4.00 GiB GPT)", 80, info_y + 135, 1, COLOR_GREEN, 0);
     draw_string("[+] Userspace Shell:   Bionic /system/bin/sh active as root (UID 0, GID 0)", 80, info_y + 160, 1, COLOR_GREEN, 0);

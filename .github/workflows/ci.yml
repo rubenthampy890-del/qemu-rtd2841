@@ -1,0 +1,64 @@
+name: CI Build & Emulation Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    name: Build QEMU & Run Hardware Diagnostics
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            ninja-build \
+            meson \
+            pkg-config \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            device-tree-compiler \
+            python3
+
+      - name: Fetch Pinned Upstream QEMU Revision
+        run: |
+          mkdir qemu-upstream && cd qemu-upstream
+          git init
+          git remote add origin https://gitlab.com/qemu-project/qemu.git
+          git fetch --depth 1 origin a19f59a72d96056d9a8f48cf6c77f5787491e414
+          git checkout FETCH_HEAD
+
+      - name: Apply RTD2841 Model Patch
+        run: |
+          cd qemu-upstream
+          git apply ../patches/qemu-rtd2841-complete.patch
+
+      - name: Configure & Build QEMU (aarch64-softmmu)
+        run: |
+          cd qemu-upstream
+          mkdir build && cd build
+          ../configure \
+            --target-list=aarch64-softmmu \
+            --disable-werror \
+            --disable-docs \
+            --disable-tools
+          ninja qemu-system-aarch64
+
+      - name: Compile Device Tree Blob (DTB)
+        run: |
+          dtc -I dts -O dtb -o dts/rtd284x-tv030.dtb dts/rtd284x-tv030.dts
+          dtc -I dts -O dtb -o dts/rtd284x.dtb dts/rtd284x.dts
+
+      - name: Run Automated Hardware Emulation Diagnostics
+        run: |
+          export QEMU_BIN="$(pwd)/qemu-upstream/build/qemu-system-aarch64"
+          python3 tests/run_ci_test.py

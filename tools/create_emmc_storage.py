@@ -2,7 +2,7 @@
 """
 tools/create_emmc_storage.py - Composite Raw eMMC Storage Image Generator
 Target SoC: Realtek RTD2841 / RTK284x (TCL RT41 Chassis, Board tv030)
-Controller: generic-sdhci at MMIO 0x18010800 (GIC SPI 28 / INTID 60)
+Controller: generic-sdhci at MMIO 0x18010800 (GIC SPI 18 / INTID 50)
 
 Builds:
   1. staging/system.img (ext4, 2048 MiB, label 'system', SELinux-labeled, normalized AID ownership)

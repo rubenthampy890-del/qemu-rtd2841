@@ -30,11 +30,19 @@
 #include "hw/core/loader.h"
 #include "target/arm/cpu-qom.h"
 #include "target/arm/cpu.h"
+#if __has_include("system/address-spaces.h")
 #include "system/reset.h"
 #include "system/runstate.h"
 #include "system/address-spaces.h"
 #include "system/system.h"
 #include "system/blockdev.h"
+#else
+#include "sysemu/reset.h"
+#include "sysemu/runstate.h"
+#include "sysemu/address-spaces.h"
+#include "sysemu/sysemu.h"
+#include "sysemu/blockdev.h"
+#endif
 #include "hw/sd/sdhci.h"
 #include "hw/sd/sd.h"
 #include "ui/input.h"
@@ -50,13 +58,11 @@ static void rtd2841_soc_init(Object *obj)
     RTD2841SocState *s = RTD2841_SOC(obj);
     int i;
 
-    /* Initialize 4x Cortex-A53 CPU cores */
     for (i = 0; i < RTD2841_NUM_CPUS; i++) {
         object_initialize_child(obj, "cpu[*]", &s->cpu[i],
                                 ARM_CPU_TYPE_NAME("cortex-a53"));
     }
 
-    /* Initialize ARM GIC-400 (GICv2) interrupt controller */
     object_initialize_child(obj, "gic", &s->gic, TYPE_ARM_GIC);
 }
 
@@ -67,49 +73,34 @@ static void rtd2841_soc_realize(DeviceState *dev, Error **errp)
     SysBusDevice *gicsbd;
     int i;
 
-    /*
-     * 1. Configure and realize Cortex-A53 quad-core CPUs
-     */
+    // Realtek's Android TV firmware runs strictly in 32-bit AArch32 mode
     for (i = 0; i < RTD2841_NUM_CPUS; i++) {
         Object *cpuobj = OBJECT(&s->cpu[i]);
 
-        /*
-         * Force Cortex-A53 into AArch32 mode (32-bit execution state).
-         * Matches the Realtek RTD2841 firmware architecture and kernel config.
-         */
         if (object_property_find(cpuobj, "aarch64")) {
             object_property_set_bool(cpuobj, "aarch64", false, &error_fatal);
         }
 
-        /* Set MPIDR multiprocessor affinity: Cluster 0, Core ID i */
         object_property_set_int(cpuobj, "mp-affinity",
                                 arm_build_mp_affinity(i, RTD2841_NUM_CPUS),
                                 &error_fatal);
 
-        /* Reset exception vectors at 0x00000000 (Low Vectors) */
         if (object_property_find(cpuobj, "reset-hivecs")) {
             object_property_set_bool(cpuobj, "reset-hivecs", false, &error_fatal);
         }
 
-        /*
-         * Secondary cores must start in powered-off state under PSCI.
-         * Core 0 boots directly; cores 1..3 wait for PSCI CPU_ON invocation.
-         */
+        // Secondary cores hold until released by PSCI CPU_ON
         if (i > 0) {
             object_property_set_bool(cpuobj, "start-powered-off", true,
                                      &error_fatal);
         }
 
-        /* Realize core */
         if (!qdev_realize(DEVICE(cpuobj), NULL, errp)) {
             return;
         }
     }
 
-    /*
-     * 2. Configure and realize ARM GIC-400 (GICv2)
-     * Realtek RTD2841 integrates GIC-400 configured for 256 interrupt lines.
-     */
+    // GIC-400 (GICv2) - 256 IRQ lines per DTS
     gicdev = DEVICE(&s->gic);
     gicsbd = SYS_BUS_DEVICE(&s->gic);
 
@@ -122,10 +113,7 @@ static void rtd2841_soc_realize(DeviceState *dev, Error **errp)
         return;
     }
 
-    /* Map GIC Distributor (GICD) at 0x18081000 */
     sysbus_mmio_map(gicsbd, 0, RTD2841_GIC_DIST_BASE);
-
-    /* Map GIC CPU Interface (GICC) at 0x18082000 */
     sysbus_mmio_map(gicsbd, 1, RTD2841_GIC_CPU_BASE);
 
     /* Wire GIC interrupt outputs to CPU cores */
@@ -141,13 +129,7 @@ static void rtd2841_soc_realize(DeviceState *dev, Error **errp)
         sysbus_connect_irq(gicsbd, i + 3 * RTD2841_NUM_CPUS,
                            qdev_get_gpio_in(cpudev, ARM_CPU_VFIQ));
 
-        /*
-         * Connect ARM generic architecture timer interrupts to GIC PPIs:
-         * - GTIMER_PHYS (Non-secure EL1 physical timer): INTID 30 (PPI 14)
-         * - GTIMER_VIRT (Virtual timer):                 INTID 27 (PPI 11)
-         * - GTIMER_HYP  (Hypervisor EL2 physical timer): INTID 26 (PPI 10)
-         * - GTIMER_SEC  (Secure EL1 physical timer):     INTID 29 (PPI 13)
-         */
+        // Generic timer PPI connections
         qdev_connect_gpio_out(cpudev, GTIMER_PHYS,
                               qdev_get_gpio_in(gicdev,
                                   RTD2841_GIC_PPI_TO_GPIO(i, RTD2841_IRQ_PPI_NONSEC_PHYS_TMR)));
@@ -162,13 +144,7 @@ static void rtd2841_soc_realize(DeviceState *dev, Error **errp)
                                   RTD2841_GIC_PPI_TO_GPIO(i, RTD2841_IRQ_PPI_SEC_PHYS_TIMER)));
     }
 
-    /*
-     * 3. 16550A UART0 mapping
-     * Register Base: 0x18062300, 32-bit registers (4-byte stride: shift = 2)
-     * Clock: 27 MHz (baud base = 27000000 / 16 = 1687500)
-     * IRQ: SPI 25 (GIC INTID 57)
-     * Wired to serial_hd(0) for stdio console communication
-     */
+    // 16550A UART0 @ 0x18062300, 27MHz clock, 4-byte stride (shift=2)
     serial_mm_init(get_system_memory(),
                    RTD2841_UART0_BASE,
                    RTD2841_UART0_REG_SHIFT,
@@ -177,20 +153,12 @@ static void rtd2841_soc_realize(DeviceState *dev, Error **errp)
                    serial_hd(0),
                    DEVICE_LITTLE_ENDIAN);
 
-    /*
-     * 4. Stub hardware peripheral apertures
-     * Realtek RBUS memory space covers internal peripheral registers.
-     * We map a comprehensive 128MB background aperture (0x18000000-0x20000000)
-     * at priority -1000 so unmodeled register reads return 0 without raising bus aborts.
-     */
-    create_unimplemented_device("rtd2841.soc_peripherals", 0x18000000, 0x08000000);
+    // 4MB RBUS window (iomap.h) mapped as background catch-all
+    create_unimplemented_device("rtd2841.soc_peripherals", RTD2841_RBUS_BASE, RTD2841_RBUS_SIZE);
     create_unimplemented_device("rtd2841.tmu", RTD2841_TMU_BASE, RTD2841_TMU_SIZE);
     create_unimplemented_device("rtd2841.sysreg", RTD2841_SYSREG_BASE, RTD2841_SYSREG_SIZE);
-    /*
-     * Realtek eMMC / SDHCI Host Controller
-     * Register Base: 0x18010800 (RTD2841_EMMC_BASE)
-     * IRQ: SPI 28 (GIC INTID 60)
-     */
+
+    // eMMC / SDHCI controller @ 0x18010800
     {
         DeviceState *sdhsidev = qdev_new(TYPE_SYSBUS_SDHCI);
         DriveInfo *di;
@@ -335,29 +303,22 @@ static void rtd2841_tv030_init(MachineState *machine)
 {
     RTD2841MachineState *ms = RTD2841_MACHINE(machine);
 
-    /* Validate RAM allocation */
     if (machine->ram_size < RTD2841_RAM_SIZE) {
-        error_report("WARNING: RTD2841 tv030 profile expects 1024 MB RAM (configured: %" PRIu64 " MB)",
+        error_report("warning: tv030 profile expects 1024 MB RAM (got: %" PRIu64 " MB)",
                      machine->ram_size / MiB);
     }
 
-    /* Instantiate and realize RTD2841 SoC */
     object_initialize_child(OBJECT(machine), "soc", &ms->soc, TYPE_RTD2841_SOC);
     sysbus_realize(SYS_BUS_DEVICE(&ms->soc), &error_fatal);
 
-    /* Map 1GB Physical DRAM at 0x00000000 with priority -1 (background RAM) */
     memory_region_add_subregion_overlap(get_system_memory(), RTD2841_RAM_BASE, machine->ram, -1);
 
-    /*
-     * Simple Framebuffer Carveout: 8 MB physical DRAM buffer at 0x3E000000.
-     * Mapped with priority 1 to overlay background RAM at 992 MB offset.
-     */
+    // Framebuffer carveout @ 0x3E000000 (8MB)
     memory_region_init_ram(&ms->fb_ram, NULL, "rtd2841.fb",
                            RTD2841_FB_SIZE, &error_fatal);
     memory_region_add_subregion_overlap(get_system_memory(), RTD2841_FB_BASE,
                                         &ms->fb_ram, 1);
 
-    /* Initialize QEMU GraphicConsole (1920x1080 @ 32 bpp ARGB8888) */
     ms->console = graphic_console_init(NULL, 0, &rtd2841_fb_ops, ms);
     {
         uint8_t *fb_ptr = memory_region_get_ram_ptr(&ms->fb_ram);
@@ -365,7 +326,6 @@ static void rtd2841_tv030_init(MachineState *machine)
         size_t total_pixels = RTD2841_FB_WIDTH * RTD2841_FB_HEIGHT;
         size_t p;
 
-        /* Default initialization: opaque dark slate background */
         for (p = 0; p < total_pixels; p++) {
             pixels[p] = 0xFF141824;
         }
@@ -376,18 +336,16 @@ static void rtd2841_tv030_init(MachineState *machine)
         dpy_gfx_replace_surface(ms->console, surface);
     }
 
-    /* Register Cocoa GUI Keyboard input handler (translates window keys to UART serial) */
+    // Direct key events to UART console
     (void)qemu_input_handler_register(NULL, &rtd2841_kbd_handler);
 
-    /* Configure ARM Linux bootloader parameters */
     ms->boot_info.ram_size = machine->ram_size;
-    ms->boot_info.board_id = -1; /* -1 tells QEMU to use Device Tree booting */
+    ms->boot_info.board_id = -1;
     ms->boot_info.loader_start = RTD2841_RAM_BASE;
     ms->boot_info.psci_conduit = QEMU_PSCI_CONDUIT_SMC;
     ms->boot_info.smp_bootreg_addr = RTD2841_SMP_CPU1_JUMP_ADDR;
 
     if (machine->firmware) {
-        /* Raw bootloader / firmware image loaded via -bios */
         int fw_size = load_image_targphys(machine->firmware, RTD2841_RAM_BASE,
                                           machine->ram_size, NULL);
         if (fw_size < 0) {
@@ -395,7 +353,6 @@ static void rtd2841_tv030_init(MachineState *machine)
             exit(1);
         }
     } else {
-        /* Standard kernel image loaded via -kernel */
         arm_load_kernel(ARM_CPU(&ms->soc.cpu[0]), machine, &ms->boot_info);
     }
 }
