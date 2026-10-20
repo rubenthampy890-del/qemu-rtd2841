@@ -128,3 +128,36 @@ Hardware notes and register references collected from reversing the Realtek Linu
   #define RBUS_BASE_SIZE      0x00400000
   ```
 - Sub-blocks inside the 4 MB window (TMU, pinmux, clock gates, Mali GPU at `0x18040000`, TSG at `0x1805C800`) are mapped as unimplemented devices at background priority. Reads return 0, preventing kernel bus aborts when probing unmodeled silicon blocks.
+
+---
+
+## Gigabit Ethernet MAC (RTL8168GU)
+
+- **Base**: `0x18016000` (4 KB aperture on RBUS)
+- **Interrupt**: SPI 20 -> GIC INTID 52
+- Realtek RTD284x integrates an internal RTL8168GU Gigabit Ethernet controller mapped directly into the SoC RBUS memory aperture.
+- DTS node (`dts/rtd284x-tv030.dts`):
+  ```dts
+  eth0: ethernet@18016000 {
+      compatible = "realtek,rtk_8168";
+      reg = <0x18016000 0x1000>;
+      interrupts = <0 20 4>;
+      status = "okay";
+  };
+  ```
+- **Register Architecture (`drivers/net/ethernet/realtek/r8168/`)**:
+  - `0x00..0x05`: `ID0`..`ID5` (Ethernet MAC address)
+  - `0x10`: `ChipCmd` (CmdReset, CmdRxEnb, CmdTxEnb)
+  - `0x20..0x27`: `TxAddrHigh`/`TxAddrLow` (TX Descriptor Ring physical base)
+  - `0x38`: `Cfg9346` (EEM config mode)
+  - `0x3C`: `IntrMask` (Interrupt Mask Register)
+  - `0x3E`: `IntrStatus` (Interrupt Status Register, write-1-to-clear)
+  - `0x40`: `TxConfig` (Hardware version identification: `0x50900800` for RTL8168GU)
+  - `0x44`: `RxConfig` (Receive configuration)
+  - `0x6C`: `PHYstatus` (Link status: `0x13` for 1000Mbps full duplex)
+  - `0x80`: `EPHYAR` (Enhanced PHY Access Register, bit 31 write/poll)
+  - `0xD3`: `MCU` (Link list status: `0x32` -> `LINK_LIST_RDY | RXTX_EMPTY`)
+  - `0xE4..0xEB`: `RxAddrHigh`/`RxAddrLow` (RX Descriptor Ring physical base)
+- **DMA Engine**: Direct physical memory access via `&address_space_memory` with circular descriptor ring ownership management (bit 31 `OWN`).
+- **QEMU Backend**: Backed by QEMU SLIRP user network (`-nic user,model=rtd2841-eth`) with ADB port forwarding (`hostfwd=tcp::5555-:5555`).
+

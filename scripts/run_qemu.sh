@@ -65,6 +65,7 @@ QEMU_ARGS=(
     -dtb "${DTB}"
     -serial stdio
     -display "${DISPLAY_BACKEND}"
+    -nic "user,model=rtd2841-eth,hostfwd=tcp::5555-:5555"
     -qmp unix:/tmp/qemu-monitor.sock,server,nowait
 )
 

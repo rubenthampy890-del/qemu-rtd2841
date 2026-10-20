@@ -27,6 +27,7 @@ jobs:
             libglib2.0-dev \
             libpixman-1-dev \
             device-tree-compiler \
+            libslirp-dev \
             python3
 
       - name: Fetch Pinned Upstream QEMU Revision
@@ -48,6 +49,7 @@ jobs:
           mkdir build && cd build
           ../configure \
             --target-list=aarch64-softmmu \
+            --enable-slirp \
             --disable-werror \
             --disable-docs \
             --disable-tools

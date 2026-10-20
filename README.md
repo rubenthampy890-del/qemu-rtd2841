@@ -48,6 +48,7 @@ Target: Realtek RTD2841 / TCL RT41 Chassis (tv030)
 - **Hardware Timers**: 8 independent 27 MHz down-counters (`TC0`..`TC7`) at `0x1801B600` with periodic reload, routed to GIC INTID 34.
 - **Watchdog**: Stub at `0x18062200` to keep vendor driver probes from hanging.
 - **eMMC / SDHCI**: QEMU SysBus SDHCI controller at `0x18010800` (SPI 18 / INTID 50) for disk image mounting (`-drive file=...,if=sd`).
+- **Gigabit Ethernet**: RTL8168GU MAC at `0x18016000` (SPI 20 / INTID 52) with DMA rings, link state emulation, and QEMU SLIRP user networking (`-nic user,model=rtd2841-eth`).
 - **Framebuffer**: Simple framebuffer at `0x3E000000` (8 MB DRAM carveout at 992 MB offset, 1920x1080 @ 32bpp ARGB8888). Compatible with Linux `simple-framebuffer`.
 - **RBUS Window**: 4 MB peripheral catch-all (`0x18000000` - `0x18400000`) so unmodeled register reads return 0 instead of taking bus aborts.
 
@@ -73,6 +74,7 @@ Base addresses verified against Realtek Linux 4.4 vendor kernel sources (`arch/a
   0x18000400 (3 KB)       SYSREG / Pinmux / Clocks
   0x18010800 (1 KB)       eMMC / SDHCI (SPI 18 / INTID 50)
   0x18010C00 (1 KB)       SDIO Controller
+  0x18016000 (4 KB)       RTL8168GU Gigabit Ethernet MAC (SPI 20 / INTID 52)
   0x1801B100 (768 B)      MISC UART1..3
   0x1801B600 (512 B)      Hardware Timers TC0..TC7 (27 MHz, SPI 2 / INTID 34)
   0x18040000 (16 KB)      Mali GPU registers

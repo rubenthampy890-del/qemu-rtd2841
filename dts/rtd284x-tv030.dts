@@ -267,10 +267,10 @@
 		broken-cd;
 	};
 
-//        clock-controller@0x18000350 {
-//               compatible = "realtek,rtd299s-clock";
-//                reg = <0x18000350 0x4b0>;
-//                #clock-cells = <1>;
-//        };
-
+	eth0: ethernet@18016000 {
+		compatible = "realtek,rtk_8168";
+		reg = <0x18016000 0x1000>;
+		interrupts = <0 20 4>;
+		status = "okay";
+	};
 };

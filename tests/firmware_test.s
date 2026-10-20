@@ -161,7 +161,47 @@ msg_sdhci_fail:
     .asciz "[FAIL] SDHCI eMMC: Capabilities register unreadable or zero!\r\n"
     .align 2
 5:
-    /* 6. Summary */
+    /* 6. Realtek RTL8168 Gigabit Ethernet MAC (0x18016000) */
+    ldr r8, =0x18016000       /* RTL8168 MAC base */
+    ldr r9, [r8, #0x40]       /* TxConfig */
+    ldr r7, =0x50900800
+    cmp r9, r7
+    bne eth_fail
+
+    ldr r6, [r8, #0x6C]       /* PHYstatus */
+    tst r6, #0x02             /* LinkStatus bit (0x02) */
+    beq eth_fail
+
+    adr r1, msg_eth_pass
+    bl print_str
+    mov r1, r9
+    bl print_hex
+    adr r1, msg_eth_mid
+    bl print_str
+    mov r1, r6
+    bl print_hex
+    adr r1, msg_eth_end
+    bl print_str
+    b 6f
+
+msg_eth_pass:
+    .asciz "[PASS] RTL8168 Ethernet (0x18016000): Controller online (TXCFG="
+msg_eth_mid:
+    .asciz ", PHYSTATUS="
+msg_eth_end:
+    .asciz ", link UP).\r\n"
+    .align 2
+
+eth_fail:
+    adr r1, msg_eth_fail
+    bl print_str
+    b halt
+
+msg_eth_fail:
+    .asciz "[FAIL] RTL8168 Ethernet: TxConfig mismatch or link down!\r\n"
+    .align 2
+6:
+    /* 7. Summary */
     adr r1, msg_summary
     bl print_str
 
