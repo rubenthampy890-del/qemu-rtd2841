@@ -46,8 +46,15 @@ if [ -z "${DTB}" ] || [ ! -f "${DTB}" ]; then
     exit 1
 fi
 
-# Target execution payload (defaults to tests/firmware_test.bin)
-IMAGE="${1:-${REPO_ROOT}/tests/firmware_test.bin}"
+# Target execution payload (defaults to live kernel if available, else firmware_test.bin)
+IMAGE="${1:-}"
+if [ -z "${IMAGE}" ]; then
+    if [ -f "${REPO_ROOT}/../tcl-firmware-re/output/kernel/zImage" ]; then
+        IMAGE="${REPO_ROOT}/../tcl-firmware-re/output/kernel/zImage"
+    else
+        IMAGE="${REPO_ROOT}/tests/firmware_test.bin"
+    fi
+fi
 
 # Auto-detect display backend if unspecified
 if [ -z "${DISPLAY_BACKEND:-}" ]; then
@@ -74,7 +81,8 @@ STORAGE_IMAGE="${STORAGE_IMAGE:-}"
 if [ -z "${STORAGE_IMAGE}" ]; then
     for cand in \
         "${REPO_ROOT}/storage.img" \
-        "${REPO_ROOT}/staging/emmc.raw"; do
+        "${REPO_ROOT}/staging/emmc.raw" \
+        "${REPO_ROOT}/../tcl-firmware-re/staging/emmc.raw"; do
         if [ -f "${cand}" ]; then
             STORAGE_IMAGE="${cand}"
             break
@@ -93,7 +101,7 @@ if [ -n "${IMAGE}" ] && [ -f "${IMAGE}" ]; then
         echo "[+] Booting kernel image via -kernel: ${IMAGE}"
         QEMU_ARGS+=(
             -kernel "${IMAGE}"
-            -append "console=tty0 console=ttyS0,115200 earlyprintk root=/dev/mmcblk0p1 rw init=/init androidboot.selinux=permissive"
+            -append "console=tty0 console=ttyS0,115200 earlyprintk root=/dev/mmcblk0p1 rootfstype=ext4 rw rootwait init=/init androidboot.selinux=permissive"
         )
     elif [[ "${filename}" == *.bin || "${filename}" == *.elf ]]; then
         echo "[+] Loading bare-metal test binary via -kernel: ${IMAGE}"
@@ -102,7 +110,7 @@ if [ -n "${IMAGE}" ] && [ -f "${IMAGE}" ]; then
         echo "[+] Booting kernel image via -kernel: ${IMAGE}"
         QEMU_ARGS+=(
             -kernel "${IMAGE}"
-            -append "console=tty0 console=ttyS0,115200 earlyprintk root=/dev/mmcblk0p1 rw init=/init androidboot.selinux=permissive"
+            -append "console=tty0 console=ttyS0,115200 earlyprintk root=/dev/mmcblk0p1 rootfstype=ext4 rw rootwait init=/init androidboot.selinux=permissive"
         )
     fi
 else
