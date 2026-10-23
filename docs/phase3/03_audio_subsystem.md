@@ -1,5 +1,8 @@
 # Phase 3 — Audio Subsystem (RTD2841 / TCL tv030)
 
+> [!NOTE]
+> **Exploratory Architecture Specification**: This document contains research and register analysis from vendor drivers for planned future work. The Audio DSP, AIO, and ADMA hardware peripherals described below are **unimplemented** in the current QEMU machine model (see [HARDWARE_FIDELITY.md](../../HARDWARE_FIDELITY.md)).
+
 Source basis: firmware kernel at `tcl-firmware-re/kernel/rtk2841/`
 (Linux 4.4.3), QEMU model at `qemu-rtd2841/`.
 

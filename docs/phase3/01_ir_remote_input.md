@@ -1,5 +1,8 @@
 # Phase 3: IR Remote Control & Input Subsystem (RTD2841 / TCL tv030)
 
+> [!NOTE]
+> **Exploratory Architecture Specification**: This document contains research and register analysis reverse-engineered from vendor drivers for planned future work. The IR remote hardware peripheral is **unimplemented** in the current QEMU machine model (see [HARDWARE_FIDELITY.md](../../HARDWARE_FIDELITY.md)).
+
 Source basis: firmware source at `tcl-firmware-re/kernel/rtk2841/` (Linux 4.4.3),
 Android staging tree at `tcl-firmware-re/staging/`, QEMU model at
 `qemu-rtd2841/`. All citations are `file:line` within those trees.

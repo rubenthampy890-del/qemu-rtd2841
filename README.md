@@ -62,10 +62,10 @@ Target: Realtek RTD2841 / TCL RT41 Chassis (tv030)
 
 ## Visual Verification
 
-| SMPTE 1080p Bars | OSD Dashboard | Remote Input (HDMI 1) |
+| SMPTE 1080p Bars | OSD Dashboard | Interactive Input (HDMI 1) |
 | :---: | :---: | :---: |
 | ![SMPTE Color Bars](tests/smpte_color_bars.png) | ![TCL Smart TV Dashboard](tests/tcl_tv_dashboard.png) | ![HDMI 1 Selected](tests/tcl_tv_hdmi1_selected.png) |
-| *Bare-metal framebuffer test pattern (`tests/firmware_fb_test.bin`)* | *OSD dashboard (`/bin/fb_test --loop`)* | *Remote input handling (card 2 / HDMI 1)* |
+| *Bare-metal framebuffer test pattern (`tests/firmware_fb_test.bin`)* | *OSD dashboard (`/bin/fb_test --loop`)* | *Console keyboard input handling (`/bin/fb_test`)* |
 
 ---
 

@@ -1,5 +1,8 @@
 # Phase 3 — Display Pipeline & SurfaceFlinger (RTD2841 / TCL tv030)
 
+> [!NOTE]
+> **Exploratory Architecture Specification**: This document contains research and HAL interface analysis for planned future work. SurfaceFlinger integration and hardware composer acceleration described below are **unimplemented** in the current repository (see [HARDWARE_FIDELITY.md](../../HARDWARE_FIDELITY.md)).
+
 Source basis: firmware kernel at `tcl-firmware-re/kernel/rtk2841/`, Android
 staging at `tcl-firmware-re/staging/`, QEMU model at `qemu-rtd2841/`.
 

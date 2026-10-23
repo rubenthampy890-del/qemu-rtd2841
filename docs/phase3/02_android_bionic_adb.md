@@ -1,5 +1,8 @@
 # Phase 3 — Android Runtime, Bionic, adbd & ADB (RTD2841 / TCL tv030)
 
+> [!NOTE]
+> **Exploratory Architecture Specification**: This document contains research and service dependency analysis from vendor firmware for planned future work. The Android framework daemons and runtime services described below are **unimplemented** in the current repository (see [HARDWARE_FIDELITY.md](../../HARDWARE_FIDELITY.md)).
+
 Source basis: Android staging tree at `tcl-firmware-re/staging/`
 (`system_extracted/`, `update_root/vendor/`), firmware kernel at
 `tcl-firmware-re/kernel/rtk2841/`, QEMU model at `qemu-rtd2841/`.

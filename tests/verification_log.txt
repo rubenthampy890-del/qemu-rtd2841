@@ -101,7 +101,7 @@ eth0: [ETH] link up, 10Mbps, half-duplex
 [>>> NETWORK SUBSYSTEM VERIFICATION TESTS PASSED <<<]
 ======================================================
 [+] Framebuffer /dev/fb0 updated: TCL Smart TV Dashboard rendered!
-[+] Dropping into interactive Android root shell (/bin/sh)...
+[+] Dropping into interactive Linux root shell (/bin/sh)...
 
 Network Subsystem Truth:
   - RTL8168GU Gigabit Ethernet MAC MMIO base 0x18016000, GIC SPI 20 (INTID 52)
