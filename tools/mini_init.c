@@ -64,10 +64,14 @@ static inline long my_syscall6(long n, long a1, long a2, long a3, long a4, long 
     return r0;
 }
 
-static inline void print_str(const char *s) {
-    long len = 0;
+static inline unsigned long my_strlen(const char *s) {
+    unsigned long len = 0;
     while (s[len]) len++;
-    my_syscall3(4 /* __NR_write */, 1, (long)s, len);
+    return len;
+}
+
+static inline void print_str(const char *s) {
+    my_syscall3(4 /* __NR_write */, 1, (long)s, my_strlen(s));
 }
 
 static inline void *my_memset(void *s, int c, unsigned long n) {
@@ -81,6 +85,69 @@ static inline void *my_memcpy(void *dest, const void *src, unsigned long n) {
     const unsigned char *s = (const unsigned char *)src;
     while (n--) *d++ = *s++;
     return dest;
+}
+
+static inline void print_dec(long val) {
+    char buf[32];
+    int i = 0;
+    unsigned long uval;
+    if (val < 0) {
+        print_str("-");
+        uval = (unsigned long)(-val);
+    } else {
+        uval = (unsigned long)val;
+    }
+    if (uval == 0) {
+        buf[i++] = '0';
+    } else {
+        char temp[32];
+        int ti = 0;
+        while (uval > 0) {
+            temp[ti++] = '0' + (char)(uval % 10);
+            uval /= 10;
+        }
+        while (ti > 0) {
+            buf[i++] = temp[--ti];
+        }
+    }
+    buf[i] = '\0';
+    print_str(buf);
+}
+
+static inline void print_ip(unsigned int ip) {
+    print_dec(ip & 0xFF);
+    print_str(".");
+    print_dec((ip >> 8) & 0xFF);
+    print_str(".");
+    print_dec((ip >> 16) & 0xFF);
+    print_str(".");
+    print_dec((ip >> 24) & 0xFF);
+}
+
+#ifndef WIFEXITED
+#define WIFEXITED(s)    (((s) & 0x7f) == 0)
+#endif
+#ifndef WEXITSTATUS
+#define WEXITSTATUS(s)  (((s) & 0xff00) >> 8)
+#endif
+#ifndef WIFSIGNALED
+#define WIFSIGNALED(s)  (((s) & 0x7f) > 0 && (((s) & 0x7f) < 0x7f))
+#endif
+#ifndef WTERMSIG
+#define WTERMSIG(s)     ((s) & 0x7f)
+#endif
+
+static int check_mount(const char *source, const char *target, const char *fstype, unsigned long flags, const void *data) {
+    long rc = my_syscall5(21 /* __NR_mount */, (long)source, (long)target, (long)fstype, (long)flags, (long)data);
+    if (rc != 0) {
+        print_str("[-] FAILED mount: ");
+        print_str(target);
+        print_str(", rc=");
+        print_dec(rc);
+        print_str("\n");
+        return (int)rc;
+    }
+    return 0;
 }
 
 struct my_timeval {
@@ -139,7 +206,6 @@ static const char banner[] =
 
 static const char msg_mount_proc[]   = "[+] Mounted /proc and /sys filesystems\n";
 static const char msg_mount_vendor[] = "[+] Mounted /vendor from /dev/mmcblk0p2 (ext4)\n";
-static const char msg_err_vendor[]   = "[-] Failed to mount /vendor from /dev/mmcblk0p2\n";
 static const char msg_mount_tmpfs[]  = "[+] Mounted tmpfs on /data, /cache, /tmp, /mnt, /storage\n";
 static const char msg_paint_fb[]     = "[+] Framebuffer /dev/fb0 updated: TCL Smart TV Dashboard rendered!\n";
 static const char msg_exec_sh[]      = "[+] Dropping into interactive Android root shell (/bin/sh)...\n\n";
@@ -405,23 +471,181 @@ static void paint_tcl_tv_display(void) {
 
 static int run_process(const char *cmd, char *const proc_argv[], int wait) {
     long pid = my_syscall0(2 /* __NR_fork */);
+    if (pid < 0) {
+        print_str("[-] FAILED: fork failed for ");
+        print_str(cmd);
+        print_str(", rc=");
+        print_dec(pid);
+        print_str("\n");
+        return (int)pid;
+    }
     if (pid == 0) {
         my_syscall3(11 /* __NR_execve */, (long)cmd, (long)proc_argv, (long)envp);
-        my_syscall1(1 /* __NR_exit */, 1);
+        my_syscall1(1 /* __NR_exit */, 127);
     }
     if (pid > 0 && wait) {
-        my_syscall3(7 /* __NR_waitpid */, pid, 0, 0);
-        return 0;
+        int status = 0;
+        long ret;
+        do {
+            ret = my_syscall4(114 /* __NR_wait4 */, pid, (long)&status, 0, 0);
+        } while (ret == -4 /* -EINTR */);
+        if (ret < 0) {
+            print_str("[-] FAILED: wait4 failed for ");
+            print_str(cmd);
+            print_str(", rc=");
+            print_dec(ret);
+            print_str("\n");
+            return (int)ret;
+        }
+        if (WIFEXITED(status)) {
+            int code = WEXITSTATUS(status);
+            if (code != 0) {
+                print_str("[-] Process ");
+                print_str(cmd);
+                print_str(" exited with status ");
+                print_dec(code);
+                print_str("\n");
+            }
+            return code;
+        }
+        if (WIFSIGNALED(status)) {
+            int sig = WTERMSIG(status);
+            print_str("[-] Process ");
+            print_str(cmd);
+            print_str(" killed by signal ");
+            print_dec(sig);
+            print_str("\n");
+            return -1;
+        }
+        return -1;
     }
     return (int)pid;
+}
+
+static long skip_dns_name(const unsigned char *buf, long idx, long len) {
+    while (idx < len) {
+        unsigned char c = buf[idx];
+        if (c == 0) {
+            return idx + 1;
+        }
+        if ((c & 0xC0) == 0xC0) {
+            /* 2-byte compressed pointer ends domain name reference */
+            if (idx + 2 > len) return -1;
+            return idx + 2;
+        }
+        if ((c & 0xC0) != 0) {
+            /* Reserved or invalid label type */
+            return -1;
+        }
+        idx += 1 + (long)c;
+    }
+    return -1;
+}
+
+static int parse_dns_response(const unsigned char *dns_resp, long rlen, unsigned int *out_ip) {
+    if (rlen < 12) return 0;
+
+    unsigned int rcode = dns_resp[3] & 0x0F;
+    unsigned int qdcount = ((unsigned int)dns_resp[4] << 8) | (unsigned int)dns_resp[5];
+    unsigned int ancount = ((unsigned int)dns_resp[6] << 8) | (unsigned int)dns_resp[7];
+
+    if (rcode != 0 || ancount == 0) return 0;
+
+    /* Skip Question Section (each has QNAME + 2-byte QTYPE + 2-byte QCLASS) */
+    long idx = 12;
+    for (unsigned int q = 0; q < qdcount; q++) {
+        idx = skip_dns_name(dns_resp, idx, rlen);
+        if (idx < 0 || idx + 4 > rlen) return 0;
+        idx += 4; /* Skip QTYPE and QCLASS */
+    }
+
+    /* Walk Answer Resource Records to locate first A record */
+    for (unsigned int a = 0; a < ancount; a++) {
+        idx = skip_dns_name(dns_resp, idx, rlen);
+        if (idx < 0 || idx + 10 > rlen) return 0;
+
+        unsigned short type = ((unsigned short)dns_resp[idx] << 8) | (unsigned short)dns_resp[idx + 1];
+        unsigned short class = ((unsigned short)dns_resp[idx + 2] << 8) | (unsigned short)dns_resp[idx + 3];
+        /* TTL at idx + 4 .. idx + 7 */
+        unsigned short rdlen = ((unsigned short)dns_resp[idx + 8] << 8) | (unsigned short)dns_resp[idx + 9];
+        idx += 10;
+
+        if (idx + rdlen > rlen) return 0;
+
+        if (type == 1 /* A */ && class == 1 /* IN */ && rdlen == 4) {
+            my_memcpy(out_ip, &dns_resp[idx], 4);
+            return 1;
+        }
+        idx += rdlen;
+    }
+
+    return 0;
+}
+
+static int do_http_fetch(unsigned int ip, const char *host_hdr) {
+    long sock = my_syscall3(281 /* __NR_socket */, 2, 1 /* SOCK_STREAM */, 0);
+    if (sock < 0) {
+        print_str("[-] FAILED: socket(SOCK_STREAM) failed, rc=");
+        print_dec(sock);
+        print_str("\n");
+        return 0;
+    }
+
+    struct my_timeval tv = { .tv_sec = 4, .tv_usec = 0 };
+    my_syscall5(294 /* __NR_setsockopt */, sock, 1 /* SOL_SOCKET */,
+                20 /* SO_RCVTIMEO */, (long)&tv, sizeof(tv));
+
+    struct my_sockaddr_in dest;
+    my_memset(&dest, 0, sizeof(dest));
+    dest.sin_family = 2;
+    dest.sin_port = 0x5000; /* Port 80 */
+    dest.sin_addr = ip;
+
+    long conn = my_syscall3(283 /* __NR_connect */, sock, (long)&dest, sizeof(dest));
+    if (conn < 0) {
+        print_str("[-] HTTP connect to ");
+        print_ip(ip);
+        print_str(":80 failed, rc=");
+        print_dec(conn);
+        print_str("\n");
+        my_syscall1(6 /* __NR_close */, sock);
+        return 0;
+    }
+
+    /* Send HTTP GET */
+    static const char get_prefix[] = "GET / HTTP/1.0\r\nHost: ";
+    static const char get_suffix[] = "\r\n\r\n";
+    my_syscall3(4 /* __NR_write */, sock, (long)get_prefix, sizeof(get_prefix) - 1);
+    my_syscall3(4 /* __NR_write */, sock, (long)host_hdr, my_strlen(host_hdr));
+    my_syscall3(4 /* __NR_write */, sock, (long)get_suffix, sizeof(get_suffix) - 1);
+
+    char buf[256];
+    long hlen = my_syscall3(3 /* __NR_read */, sock, (long)buf, sizeof(buf) - 1);
+    my_syscall1(6 /* __NR_close */, sock);
+
+    if (hlen > 0) {
+        return (int)hlen;
+    }
+    print_str("[-] HTTP read from ");
+    print_ip(ip);
+    print_str(" failed, rc=");
+    print_dec(hlen);
+    print_str("\n");
+    return 0;
 }
 
 static void init_network_and_verify(void) {
     print_str("[*] Initializing OpenDTV Realtek Network Subsystem...\n");
 
+    int socket_verified = 0;
+    int ip_assigned = 0;
+    int dns_received = 0;
+    int http_bytes = 0;
+
     /* 1. Configure eth0 via socket ioctl calls */
     long s = my_syscall3(281 /* __NR_socket */, 2 /* AF_INET */, 2 /* SOCK_DGRAM */, 0);
     if (s >= 0) {
+        socket_verified = 1;
         struct my_ifreq ifr;
         my_memset(&ifr, 0, sizeof(ifr));
         my_memcpy(ifr.ifr_name, "eth0", 5);
@@ -429,16 +653,16 @@ static void init_network_and_verify(void) {
         /* Set IP 10.0.2.15 */
         ifr.ifru_addr.sin_family = 2;
         ifr.ifru_addr.sin_addr = 0x0F02000A;
-        my_syscall3(54 /* __NR_ioctl */, s, 0x8916 /* SIOCSIFADDR */, (long)&ifr);
+        long r_addr = my_syscall3(54 /* __NR_ioctl */, s, 0x8916 /* SIOCSIFADDR */, (long)&ifr);
 
         /* Set Netmask 255.255.255.0 */
         ifr.ifru_addr.sin_addr = 0x00FFFFFF;
-        my_syscall3(54 /* __NR_ioctl */, s, 0x891c /* SIOCSIFNETMASK */, (long)&ifr);
+        long r_mask = my_syscall3(54 /* __NR_ioctl */, s, 0x891c /* SIOCSIFNETMASK */, (long)&ifr);
 
         /* Bring interface UP */
         my_syscall3(54 /* __NR_ioctl */, s, 0x8913 /* SIOCGIFFLAGS */, (long)&ifr);
         ifr.ifru_flags |= 0x0041; /* IFF_UP | IFF_RUNNING */
-        my_syscall3(54 /* __NR_ioctl */, s, 0x8914 /* SIOCSIFFLAGS */, (long)&ifr);
+        long r_flags = my_syscall3(54 /* __NR_ioctl */, s, 0x8914 /* SIOCSIFFLAGS */, (long)&ifr);
 
         /* Add default route via 10.0.2.2 dev eth0 */
         struct my_rtentry rt;
@@ -449,33 +673,79 @@ static void init_network_and_verify(void) {
         rt.rt_genmask.sin_family = 2;
         rt.rt_flags = 0x0003; /* RTF_UP | RTF_GATEWAY */
         rt.rt_dev = "eth0";
-        my_syscall3(54 /* __NR_ioctl */, s, 0x890b /* SIOCADDRT */, (long)&rt);
+        long r_rt = my_syscall3(54 /* __NR_ioctl */, s, 0x890b /* SIOCADDRT */, (long)&rt);
+
+        if (r_addr == 0 && r_mask == 0 && r_flags == 0) {
+            ip_assigned = 1;
+        } else {
+            if (r_addr != 0) {
+                print_str("[-] FAILED: SIOCSIFADDR failed, rc=");
+                print_dec(r_addr);
+                print_str("\n");
+            }
+            if (r_mask != 0) {
+                print_str("[-] FAILED: SIOCSIFNETMASK failed, rc=");
+                print_dec(r_mask);
+                print_str("\n");
+            }
+            if (r_flags != 0) {
+                print_str("[-] FAILED: SIOCSIFFLAGS failed, rc=");
+                print_dec(r_flags);
+                print_str("\n");
+            }
+        }
+
+        if (r_rt != 0 && r_rt != -17 /* -EEXIST */) {
+            /* Try userspace route command if kernel ioctl failed */
+            static const char str_ip[] = "/system/bin/ip";
+            static char *ip_args[] = {
+                (char*)str_ip, "route", "add", "default", "via", "10.0.2.2", "dev", "eth0", 0
+            };
+            run_process(str_ip, ip_args, 1);
+        }
 
         my_syscall1(6 /* __NR_close */, s);
+    } else {
+        print_str("[-] FAILED: socket creation for eth0 failed, rc=");
+        print_dec(s);
+        print_str("\n");
     }
 
-    /* 2. Invoke userspace ifconfig & ip route tools as verification/fallback */
-    static const char str_ifconfig[] = "/system/bin/ifconfig";
-    static char *ifconfig_args[] = {
-        (char*)str_ifconfig, "eth0", "10.0.2.15", "netmask", "255.255.255.0", "up", 0
-    };
-    run_process(str_ifconfig, ifconfig_args, 1);
+    /* 2. Invoke userspace ifconfig as verification/fallback if ioctl failed */
+    if (!ip_assigned) {
+        static const char str_ifconfig[] = "/system/bin/ifconfig";
+        static char *ifconfig_args[] = {
+            (char*)str_ifconfig, "eth0", "10.0.2.15", "netmask", "255.255.255.0", "up", 0
+        };
+        int r_ifc = run_process(str_ifconfig, ifconfig_args, 1);
+        if (r_ifc == 0) {
+            ip_assigned = 1;
+        }
+    }
 
-    static const char str_ip[] = "/system/bin/ip";
-    static char *ip_args[] = {
-        (char*)str_ip, "route", "add", "default", "via", "10.0.2.2", "dev", "eth0", 0
-    };
-    run_process(str_ip, ip_args, 1);
-    print_str("[+] Network Bring-up: eth0 initialized with static IP 10.0.2.15/24 (GW 10.0.2.2)\n");
+    if (ip_assigned) {
+        print_str("[+] Network Bring-up: eth0 initialized with static IP 10.0.2.15/24 (GW 10.0.2.2)\n");
+    } else {
+        print_str("[-] Network Bring-up: eth0 initialization failed\n");
+    }
 
     /* 3. Populate /etc/resolv.conf */
     long rfd = my_syscall3(5 /* __NR_open */, (long)"/etc/resolv.conf",
                            577 /* O_WRONLY | O_CREAT | O_TRUNC */, 0644);
     if (rfd >= 0) {
         static const char dns_data[] = "nameserver 8.8.8.8\nnameserver 10.0.2.3\n";
-        my_syscall3(4 /* __NR_write */, rfd, (long)dns_data, sizeof(dns_data) - 1);
+        long wr = my_syscall3(4 /* __NR_write */, rfd, (long)dns_data, sizeof(dns_data) - 1);
+        if (wr < 0) {
+            print_str("[-] FAILED: write /etc/resolv.conf failed, rc=");
+            print_dec(wr);
+            print_str("\n");
+        }
         my_syscall1(6 /* __NR_close */, rfd);
         print_str("[+] Network Bring-up: /etc/resolv.conf populated with public DNS (8.8.8.8)\n");
+    } else {
+        print_str("[-] FAILED: open /etc/resolv.conf failed, rc=");
+        print_dec(rfd);
+        print_str("\n");
     }
 
     /* 4. Trigger DHCP leasing in background */
@@ -494,8 +764,12 @@ static void init_network_and_verify(void) {
     static char *ping_args[] = {
         (char*)str_ping, "-c", "2", "-W", "2", "10.0.2.2", 0
     };
-    run_process(str_ping, ping_args, 1);
-    print_str("[+] Live Network Verification: Gateway ping (10.0.2.2) succeeded!\n");
+    int r_ping = run_process(str_ping, ping_args, 1);
+    if (r_ping == 0) {
+        print_str("[+] Live Network Verification: Gateway ping (10.0.2.2) succeeded!\n");
+    } else {
+        print_str("[-] Live Network Verification: Gateway ping (10.0.2.2) failed\n");
+    }
 
     /* 5b. DNS Resolution via UDP socket to 8.8.8.8:53 */
     long dns_sock = my_syscall3(281 /* __NR_socket */, 2, 2, 0);
@@ -525,11 +799,9 @@ static void init_network_and_verify(void) {
         unsigned char dns_resp[512];
         long rlen = my_syscall6(292 /* __NR_recvfrom */, dns_sock, (long)dns_resp,
                                 sizeof(dns_resp), 0, 0, 0);
-        if (rlen > 12) {
+        if (parse_dns_response(dns_resp, rlen, &resolved_ip)) {
+            dns_received = 1;
             print_str("[+] Live Network Verification: DNS resolution (8.8.8.8 -> google.com) succeeded!\n");
-            if (rlen >= 4) {
-                resolved_ip = *(unsigned int*)(&dns_resp[rlen - 4]);
-            }
         } else {
             /* Fallback to QEMU builtin DNS 10.0.2.3 */
             dns_dest.sin_addr = 0x0302000A; /* 10.0.2.3 */
@@ -537,65 +809,48 @@ static void init_network_and_verify(void) {
                         0, (long)&dns_dest, sizeof(dns_dest));
             rlen = my_syscall6(292, dns_sock, (long)dns_resp,
                                sizeof(dns_resp), 0, 0, 0);
-            if (rlen > 12) {
+            if (parse_dns_response(dns_resp, rlen, &resolved_ip)) {
+                dns_received = 1;
                 print_str("[+] Live Network Verification: DNS resolution (10.0.2.3 -> google.com) succeeded!\n");
-                if (rlen >= 4) {
-                    resolved_ip = *(unsigned int*)(&dns_resp[rlen - 4]);
-                }
             } else {
-                print_str("[+] Live Network Verification: DNS resolution probe completed\n");
+                print_str("[-] Live Network Verification: DNS resolution probe failed\n");
             }
         }
         my_syscall1(6 /* __NR_close */, dns_sock);
+    } else {
+        print_str("[-] Live Network Verification: Failed to create DNS UDP socket\n");
     }
 
     /* 5c. HTTP Fetch via TCP socket to port 80 */
-    long http_sock = my_syscall3(281 /* __NR_socket */, 2, 1 /* SOCK_STREAM */, 0);
-    if (http_sock >= 0) {
-        struct my_timeval tv = { .tv_sec = 3, .tv_usec = 0 };
-        my_syscall5(294 /* __NR_setsockopt */, http_sock, 1 /* SOL_SOCKET */,
-                    20 /* SO_RCVTIMEO */, (long)&tv, sizeof(tv));
-
-        struct my_sockaddr_in http_dest;
-        my_memset(&http_dest, 0, sizeof(http_dest));
-        http_dest.sin_family = 2;
-        http_dest.sin_port = 0x5000; /* Port 80 */
-        http_dest.sin_addr = resolved_ip ? resolved_ip : 0x0202000A;
-
-        long conn = my_syscall3(283 /* __NR_connect */, http_sock,
-                                (long)&http_dest, sizeof(http_dest));
-        if (conn >= 0) {
-            static const char req[] = "GET / HTTP/1.0\r\nHost: google.com\r\n\r\n";
-            my_syscall3(4 /* __NR_write */, http_sock, (long)req, sizeof(req) - 1);
-            char http_resp[256];
-            long hlen = my_syscall3(3 /* __NR_read */, http_sock, (long)http_resp,
-                                    sizeof(http_resp) - 1);
-            if (hlen > 0) {
-                print_str("[+] Live Network Verification: HTTP fetch (google.com:80) succeeded!\n");
-            }
-        } else {
-            /* Try host loopback alias 10.0.2.2 */
-            http_dest.sin_addr = 0x0202000A;
-            conn = my_syscall3(283, http_sock, (long)&http_dest, sizeof(http_dest));
-            if (conn >= 0) {
-                static const char req[] = "GET / HTTP/1.0\r\nHost: 10.0.2.2\r\n\r\n";
-                my_syscall3(4, http_sock, (long)req, sizeof(req) - 1);
-                char http_resp[256];
-                long hlen = my_syscall3(3, http_sock, (long)http_resp,
-                                        sizeof(http_resp) - 1);
-                if (hlen > 0) {
-                    print_str("[+] Live Network Verification: HTTP fetch (10.0.2.2:80) succeeded!\n");
-                }
-            } else {
-                print_str("[+] Live Network Verification: HTTP fetch probe completed\n");
-            }
+    if (resolved_ip) {
+        http_bytes = do_http_fetch(resolved_ip, "google.com");
+        if (http_bytes > 0) {
+            print_str("[+] Live Network Verification: HTTP fetch (google.com:80) succeeded!\n");
         }
-        my_syscall1(6 /* __NR_close */, http_sock);
+    }
+    if (http_bytes <= 0) {
+        /* Fallback to QEMU host loopback alias 10.0.2.2 */
+        http_bytes = do_http_fetch(0x0202000A /* 10.0.2.2 */, "10.0.2.2");
+        if (http_bytes > 0) {
+            print_str("[+] Live Network Verification: HTTP fetch (10.0.2.2:80) succeeded!\n");
+        } else {
+            print_str("[-] Live Network Verification: HTTP fetch failed on all targets\n");
+        }
     }
 
-    print_str("\n======================================================\n");
-    print_str("[>>> NETWORK SUBSYSTEM VERIFICATION TESTS PASSED <<<]\n");
-    print_str("======================================================\n\n");
+    /* 6. Gate Pass Banner Behind Real Verified Booleans */
+    if (socket_verified && ip_assigned && dns_received && (http_bytes > 0)) {
+        print_str("\n======================================================\n");
+        print_str("[>>> NETWORK SUBSYSTEM VERIFICATION TESTS PASSED <<<]\n");
+        print_str("======================================================\n\n");
+    } else {
+        print_str("\n[-] FAILED: Network Subsystem Verification incomplete:\n");
+        if (!socket_verified) print_str("    [-] Socket initialization failed\n");
+        if (!ip_assigned)     print_str("    [-] IP address assignment failed\n");
+        if (!dns_received)    print_str("    [-] DNS resolution failed\n");
+        if (http_bytes <= 0)  print_str("    [-] HTTP fetch probe failed\n");
+        print_str("\n");
+    }
 }
 
 void _start(void) {
@@ -612,40 +867,50 @@ void _start(void) {
     my_syscall3(4 /* __NR_write */, 1, (long)banner, sizeof(banner) - 1);
 
     /* 2. Mount /proc and /sys */
-    my_syscall5(21 /* __NR_mount */, (long)str_proc, (long)str_proc_path, (long)str_proc, 0, 0);
-    my_syscall5(21 /* __NR_mount */, (long)str_sysfs, (long)str_sys_path, (long)str_sysfs, 0, 0);
-    my_syscall3(4, 1, (long)msg_mount_proc, sizeof(msg_mount_proc) - 1);
+    int r_proc = check_mount(str_proc, str_proc_path, str_proc, 0, 0);
+    int r_sys  = check_mount(str_sysfs, str_sys_path, str_sysfs, 0, 0);
+    if (r_proc == 0 && r_sys == 0) {
+        my_syscall3(4, 1, (long)msg_mount_proc, sizeof(msg_mount_proc) - 1);
+    } else {
+        print_str("[-] ABORT: Critical system mounts (/proc, /sys) failed.\n");
+        while (1) {
+            my_syscall3(29 /* __NR_pause */, 0, 0, 0);
+        }
+    }
 
     /* 3. Mount /dev/pts */
     my_syscall2(39 /* __NR_mkdir */, (long)str_devpts_path, 0755);
-    my_syscall5(21 /* __NR_mount */, (long)str_devpts, (long)str_devpts_path, (long)str_devpts, 0, 0);
+    int r_pts = check_mount(str_devpts, str_devpts_path, str_devpts, 0, 0);
+    if (r_pts != 0) {
+        print_str("[-] WARNING: /dev/pts mount failed\n");
+    }
 
     /* 4. Mount /vendor from partition 2 */
     my_syscall2(39 /* __NR_mkdir */, (long)str_vendor_path, 0755);
-    long ret = my_syscall5(21 /* __NR_mount */, (long)str_vendor_dev, (long)str_vendor_path, (long)str_ext4, 0, 0);
-    if (ret == 0) {
+    int r_vendor = check_mount(str_vendor_dev, str_vendor_path, str_ext4, 0, 0);
+    if (r_vendor == 0) {
         my_syscall3(4, 1, (long)msg_mount_vendor, sizeof(msg_mount_vendor) - 1);
-    } else {
-        my_syscall3(4, 1, (long)msg_err_vendor, sizeof(msg_err_vendor) - 1);
     }
 
     /* 5. Mount tmpfs on /data, /cache, /tmp, /mnt, /storage */
     my_syscall2(39, (long)str_data_path, 0771);
-    my_syscall5(21, (long)str_tmpfs, (long)str_data_path, (long)str_tmpfs, 0, 0);
+    int r_data = check_mount(str_tmpfs, str_data_path, str_tmpfs, 0, 0);
 
     my_syscall2(39, (long)str_cache_path, 0770);
-    my_syscall5(21, (long)str_tmpfs, (long)str_cache_path, (long)str_tmpfs, 0, 0);
+    int r_cache = check_mount(str_tmpfs, str_cache_path, str_tmpfs, 0, 0);
 
     my_syscall2(39, (long)str_tmp_path, 0777);
-    my_syscall5(21, (long)str_tmpfs, (long)str_tmp_path, (long)str_tmpfs, 0, 0);
+    int r_tmp = check_mount(str_tmpfs, str_tmp_path, str_tmpfs, 0, 0);
 
     my_syscall2(39, (long)str_mnt_path, 0755);
-    my_syscall5(21, (long)str_tmpfs, (long)str_mnt_path, (long)str_tmpfs, 0, 0);
+    int r_mnt = check_mount(str_tmpfs, str_mnt_path, str_tmpfs, 0, 0);
 
     my_syscall2(39, (long)str_storage_path, 0755);
-    my_syscall5(21, (long)str_tmpfs, (long)str_storage_path, (long)str_tmpfs, 0, 0);
+    int r_storage = check_mount(str_tmpfs, str_storage_path, str_tmpfs, 0, 0);
 
-    my_syscall3(4, 1, (long)msg_mount_tmpfs, sizeof(msg_mount_tmpfs) - 1);
+    if (r_data == 0 && r_cache == 0 && r_tmp == 0 && r_mnt == 0 && r_storage == 0) {
+        my_syscall3(4, 1, (long)msg_mount_tmpfs, sizeof(msg_mount_tmpfs) - 1);
+    }
 
     /* 6. Set up Android compatibility symlinks */
     my_syscall2(83 /* __NR_symlink */, (long)str_system_etc, (long)str_etc);
@@ -667,10 +932,37 @@ void _start(void) {
     long pid = my_syscall0(2 /* __NR_fork */);
     if (pid == 0) {
         my_syscall3(11 /* __NR_execve */, (long)str_fb_test, (long)fb_argv, (long)envp);
-        my_syscall1(1 /* __NR_exit */, 1);
+        my_syscall1(1 /* __NR_exit */, 127);
     }
     if (pid > 0) {
-        my_syscall3(7 /* __NR_waitpid */, pid, 0, 0);
+        int status = 0;
+        long ret;
+        do {
+            ret = my_syscall4(114 /* __NR_wait4 */, pid, (long)&status, 0, 0);
+        } while (ret == -4 /* -EINTR */);
+        if (ret < 0) {
+            print_str("[-] FAILED: wait4 failed for fb_test, rc=");
+            print_dec(ret);
+            print_str("\n");
+        } else if (WIFEXITED(status)) {
+            int code = WEXITSTATUS(status);
+            if (code != 0) {
+                print_str("[-] fb_test process exited with status ");
+                print_dec(code);
+                print_str("\n");
+            } else {
+                print_str("[+] fb_test process exited cleanly (status 0)\n");
+            }
+        } else if (WIFSIGNALED(status)) {
+            int sig = WTERMSIG(status);
+            print_str("[-] fb_test process killed by signal ");
+            print_dec(sig);
+            print_str("\n");
+        }
+    } else if (pid < 0) {
+        print_str("[-] FAILED: fork failed for fb_test, rc=");
+        print_dec(pid);
+        print_str("\n");
     }
 
     /* 9. Launch interactive root shell on exit */

@@ -2,14 +2,15 @@ name: CI Build & Emulation Test
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'dev/**' ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, 'dev/**' ]
 
 jobs:
   build-and-test:
     name: Build QEMU & Run Hardware Diagnostics
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout Repository
@@ -28,7 +29,9 @@ jobs:
             libpixman-1-dev \
             device-tree-compiler \
             libslirp-dev \
-            python3
+            python3 \
+            gcc-arm-none-eabi \
+            binutils-arm-none-eabi
 
       - name: Fetch Pinned Upstream QEMU Revision
         run: |
@@ -54,6 +57,11 @@ jobs:
             --disable-docs \
             --disable-tools
           ninja qemu-system-aarch64
+
+      - name: Assemble Diagnostic Firmware
+        run: |
+          arm-none-eabi-as -mcpu=cortex-a53 tests/firmware_test.s -o tests/firmware_test.o
+          arm-none-eabi-objcopy -O binary tests/firmware_test.o tests/firmware_test.bin
 
       - name: Compile Device Tree Blob (DTB)
         run: |

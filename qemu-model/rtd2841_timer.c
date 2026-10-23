@@ -18,9 +18,9 @@
  *           [29] tc_pause
  * ICR bits: [31] tc_ie
  *
- * Timer behaviour: 32-bit decrementing countdown @27 MHz. On underflow the
- * raw status bit is latched in ISR; in periodic mode (tc_mode=1) the counter
- * reloads from TVR and keeps running, otherwise (tc_mode=0) it stops.
+ * Timer behaviour: 32-bit hardware up-counter modeled via ptimer countdown.
+ * Software CVR read returns (limit - count) so Linux sched_clock sees a
+ * monotonically increasing counter. On match/underflow raw ISR bit latches.
  *
  * Watchdog companion block (stub, prevents reboot loops on driver probe):
  *   0x18062200..0x180622FF
@@ -181,8 +181,11 @@ static uint64_t rtd2841_timer_read(void *opaque, hwaddr addr, unsigned size)
         id = addr / 4;
         return s->tvr[id];
     } else if (addr < 0x40) {               /* TIMER_TCxCVR : live counter */
+        uint64_t limit, count;
         id = (addr - R_CVR0) / 4;
-        return ptimer_get_count(s->timer[id]);
+        limit = ptimer_get_limit(s->timer[id]);
+        count = ptimer_get_count(s->timer[id]);
+        return (limit >= count) ? (limit - count) : 0;
     } else if (addr < 0x60) {               /* TIMER_TCxCR */
         id = (addr - R_CR0) / 4;
         return s->cr[id];
@@ -219,7 +222,9 @@ static void rtd2841_timer_write(void *opaque, hwaddr addr, uint64_t val,
         {
             ptimer_state *t = s->timer[id];
             if (rtd2841_running(s, id)) {
-                uint64_t cur = ptimer_get_count(t);
+                uint64_t limit = ptimer_get_limit(t);
+                uint64_t count = ptimer_get_count(t);
+                uint64_t cur = (limit >= count) ? (limit - count) : 0;
                 uint64_t next;
                 if (val > cur) {
                     next = val - cur;
@@ -245,10 +250,14 @@ static void rtd2841_timer_write(void *opaque, hwaddr addr, uint64_t val,
         }
         return;
     } else if (addr < 0x40) {               /* TIMER_TCxCVR */
+        ptimer_state *t;
+        uint64_t limit;
         id = (addr - R_CVR0) / 4;
-        ptimer_transaction_begin(s->timer[id]);
-        ptimer_set_count(s->timer[id], val);
-        ptimer_transaction_commit(s->timer[id]);
+        t = s->timer[id];
+        limit = ptimer_get_limit(t);
+        ptimer_transaction_begin(t);
+        ptimer_set_count(t, (val <= limit) ? (limit - val) : 0);
+        ptimer_transaction_commit(t);
         return;
     } else if (addr < 0x60) {               /* TIMER_TCxCR */
         uint32_t old, new_en, old_en;
