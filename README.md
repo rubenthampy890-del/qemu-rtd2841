@@ -3,9 +3,11 @@
 [![CI Build & Emulation Test](https://github.com/rubenthampy890-del/qemu-rtd2841/actions/workflows/ci.yml/badge.svg)](https://github.com/rubenthampy890-del/qemu-rtd2841/actions/workflows/ci.yml)
 [![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)](LICENSE)
 
-QEMU machine model and bare-metal emulator for the Realtek RTD2841 / RTK284x SoC (TCL RT41 chassis, board profile `tv030`).
+QEMU machine model and system emulator for the Realtek RTD2841 / RTK284x SoC (TCL RT41 chassis, board profile `tv030`).
 
-Used in many Android Smart TVs (TCL, Xiaomi, Hisense, etc.). This model lets you run diagnostics, inspect firmware, and boot kernels without risking physical hardware or dealing with board rework.
+Used in commercial Android Smart TVs (TCL, Xiaomi, Hisense, etc.). This model enables developers and security researchers to run bare-metal diagnostics, reverse-engineer peripherals, and boot Linux kernels without risking physical hardware or requiring board rework.
+
+> **Project Scope & Verification Boundary**: This repository implements an experimental QEMU machine model for RTD2841/RTK284x TV-platform emulation. Automated CI tests establish bare-metal hardware diagnostics (CPU in AArch32 mode, GICv2, monotonic timers, SDHCI, and RTL8168 Ethernet), eMMC storage media insertion, and Linux 4.4 kernel boot with ext4 rootfs and live outbound network connectivity. Higher-level Android TV framework daemons (`adbd`, `surfaceflinger`) and 4-core SMP TrustZone boot flows are under active Phase 3 development (see [HARDWARE_FIDELITY.md](HARDWARE_FIDELITY.md)).
 
 ---
 
