@@ -1,6 +1,32 @@
 # Hardware & Register Notes: Realtek RTD2841 / RTK284x
 
-Hardware notes and register references collected from reversing the Realtek Linux 4.4 vendor kernel tree (`arch/arm/mach-rtd284x/`, `include/rbus/`) and extracted `tv030` device trees.
+Hardware notes, register references, and peripheral capability classifications collected from reversing the Realtek Linux 4.4 vendor kernel tree (`arch/arm/mach-rtd284x/`, `include/rbus/`) and extracted `tv030` device trees.
+
+---
+
+## Peripheral Capability & Fidelity Classification Matrix
+
+Platform peripherals are categorized into four implementation tiers:
+1. **Custom Model**: Purpose-built QEMU device model written specifically for RTD2841 SoC behavior.
+2. **Upstream QEMU**: Standard, upstream QEMU peripheral model mapped to SoC physical MMIO and GIC interrupts.
+3. **Register Stub**: Minimal MMIO read/write handler to satisfy guest driver probe routines without functional simulation.
+4. **Unimplemented**: Background RBUS aperture (`0x18000000` - `0x18400000`) returning 0 to prevent bus aborts during hardware enumeration.
+
+| Subsystem | Physical Base | Size | Interrupt (GIC) | Implementation Type | Driver Status & Test Notes |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Cortex-A53 x4** | N/A | N/A | ARM Generic PPIs | **Custom Wiring** | Pinned to AArch32 mode (`aarch64=false`). CPU 0 boots directly; SMP secondary cores use holding pen mailbox at `0x504`. |
+| **GIC-400 (GICv2)** | `0x18081000` (GICD)<br>`0x18082000` (GICC) | 4 KB<br>8 KB | N/A | **Upstream QEMU** | Upstream `TYPE_ARM_GIC`, 256 physical INTIDs, verified via `GICD_TYPER=0x67`. |
+| **16550A UART0** | `0x18062300` | 32 B | SPI 25 (INTID 57) | **Upstream QEMU** | Upstream `serial_mm_init` with 4-byte register stride (`shift=2`), clocked at 27 MHz (`baudbase=1687500`). |
+| **Timers TC0..TC7** | `0x1801B600` | 512 B | SPI 2 (INTID 34) | **Custom Model** | `hw/arm/rtd2841_timer.c`: 8 independent 27 MHz monotonic up-counters (`limit - count` returned to CVR), periodic rearming, ptimer backend. |
+| **eMMC / SDHCI** | `0x18010800` | 1 KB | SPI 18 (INTID 50) | **Upstream QEMU** | Upstream `TYPE_SYSBUS_SDHCI`. Mounts raw partition images via `-drive file=...,format=raw,if=sd`. |
+| **Ethernet MAC** | `0x18016000` | 4 KB | SPI 20 (INTID 52) | **Custom Model** | `rtd2841_eth` in `rtd2841.c`: RTL8168GU MAC version (`0x50900800`), DMA ring buffers, SLIRP NAT integration. |
+| **Framebuffer** | `0x3E000000` | 8 MB | N/A | **Upstream Overlay** | 1920x1080@32bpp ARGB8888 RAM carveout. Compatible with Linux `simple-framebuffer`. |
+| **Watchdog** | `0x18062200` | 256 B | SPI 0 (INTID 32) | **Register Stub** | Read/write register scaffold (`WDOG_TCWCR`, `WDOG_TCWTR`) to prevent kernel watchdog driver reboot loops. |
+| **TMU (Thermal)** | `0x18000000` | 1 KB | N/A | **Unimplemented** | Returns 0. Kernel thermal driver logs warning but boot continues. Safe for diagnostic and Linux boot paths. |
+| **SYSREG / Clocks** | `0x18000400` | 3 KB | N/A | **Unimplemented** | Returns 0. Fixed clock frequencies provided directly by Device Tree. |
+| **Mali GPU** | `0x18040000` | 16 KB | SPI 12 (INTID 44) | **Unimplemented** | Returns 0. OpenGL ES composition not yet active; SurfaceFlinger software composition fallback used. |
+| **ARM TSG** | `0x1805C800` | 256 B | N/A | **Unimplemented** | Returns 0. Time-stamping generator registers return 0 safely. |
+| **SCU Control** | `0x18080000` | 4 KB | N/A | **Unimplemented** | Returns 0. CPU SMP coherency managed directly in software. |
 
 ---
 
@@ -62,7 +88,7 @@ Hardware notes and register references collected from reversing the Realtek Linu
   - `0xE8`: `TIMER_UMSK_ISR` (unmasked raw status, bit `n` = `TCn`)
   - `0xEC`: `TIMER_ISR` (masked status, write-1-to-clear)
 - **Control Register Bits**:
-  - Bit 31 (`tc_en`): 1 = enable countdown
+  - Bit 31 (`tc_en`): 1 = enable counter (incrementing monotonic up-counter `limit - count` returned to CVR)
   - Bit 30 (`tc_mode`): 1 = periodic auto-reload from `TVR`, 0 = one-shot
   - Bit 29 (`tc_pause`): 1 = pause counter
 - Implemented in `hw/arm/rtd2841_timer.c` using QEMU `ptimer`.

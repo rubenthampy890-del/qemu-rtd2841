@@ -60,8 +60,8 @@ jobs:
 
       - name: Assemble Diagnostic Firmware
         run: |
-          arm-none-eabi-as -mcpu=cortex-a53 tests/firmware_test.s -o tests/firmware_test.o
-          arm-none-eabi-objcopy -O binary tests/firmware_test.o tests/firmware_test.bin
+          make -C tests clean
+          make -C tests
 
       - name: Compile Device Tree Blob (DTB)
         run: |
@@ -72,3 +72,12 @@ jobs:
         run: |
           export QEMU_BIN="$(pwd)/qemu-upstream/build/qemu-system-aarch64"
           python3 tests/run_ci_test.py
+
+      - name: Archive CI Test Logs & Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-rtd2841-ci-logs
+          path: |
+            tests/verification_log.txt
+            *.log
