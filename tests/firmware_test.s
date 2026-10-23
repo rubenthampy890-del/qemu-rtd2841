@@ -80,9 +80,9 @@ delay_loop:
     /* Read counter after */
     ldr r7, [r4, #0x20]       /* TC0CVR after */
 
-    /* Assert countdown */
+    /* Assert up-count */
     cmp r7, r6
-    bhs timer_fail
+    bls timer_fail
 
     adr r1, msg_timer_pass
     bl print_str
@@ -97,7 +97,7 @@ delay_loop:
     b 4f
 
 msg_timer_pass:
-    .asciz "[PASS] TC0 Timer (0x1801B600): Active down-count verified (T0="
+    .asciz "[PASS] TC0 Timer (0x1801B600): Active up-count verified (T0="
 msg_timer_mid:
     .asciz ", T1="
 msg_timer_end:
@@ -110,7 +110,7 @@ timer_fail:
     b halt
 
 msg_timer_fail:
-    .asciz "[FAIL] TC0 Timer: Counter failed to decrement!\r\n"
+    .asciz "[FAIL] TC0 Timer: Counter failed to increment!\r\n"
     .align 2
 4:
     /* 5. Realtek SDHCI / eMMC Host Controller */

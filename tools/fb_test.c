@@ -6,14 +6,14 @@ static inline long sys_open(const char *path, long flags, long mode) {
     register long r0 __asm__("r0") = (long)path;
     register long r1 __asm__("r1") = flags;
     register long r2 __asm__("r2") = mode;
-    __asm__ volatile("swi #0" : "=r"(r0) : "r"(r7), "r"(r0), "r"(r1), "r"(r2) : "memory");
+    __asm__ volatile("swi #0" : "+r"(r0) : "r"(r7), "r"(r1), "r"(r2) : "memory");
     return r0;
 }
 
 static inline long sys_close(long fd) {
     register long r7 __asm__("r7") = 6; /* __NR_close */
     register long r0 __asm__("r0") = fd;
-    __asm__ volatile("swi #0" : "=r"(r0) : "r"(r7), "r"(r0) : "memory");
+    __asm__ volatile("swi #0" : "+r"(r0) : "r"(r7) : "memory");
     return r0;
 }
 
@@ -22,7 +22,7 @@ static inline long sys_read(long fd, void *buf, unsigned long count) {
     register long r0 __asm__("r0") = fd;
     register long r1 __asm__("r1") = (long)buf;
     register long r2 __asm__("r2") = count;
-    __asm__ volatile("swi #0" : "=r"(r0) : "r"(r7), "r"(r0), "r"(r1), "r"(r2) : "memory");
+    __asm__ volatile("swi #0" : "+r"(r0) : "r"(r7), "r"(r1), "r"(r2) : "memory");
     return r0;
 }
 
@@ -31,7 +31,7 @@ static inline long sys_write(long fd, const void *buf, unsigned long count) {
     register long r0 __asm__("r0") = fd;
     register long r1 __asm__("r1") = (long)buf;
     register long r2 __asm__("r2") = count;
-    __asm__ volatile("swi #0" : "=r"(r0) : "r"(r7), "r"(r0), "r"(r1), "r"(r2) : "memory");
+    __asm__ volatile("swi #0" : "+r"(r0) : "r"(r7), "r"(r1), "r"(r2) : "memory");
     return r0;
 }
 
@@ -40,7 +40,16 @@ static inline long sys_lseek(long fd, long offset, long whence) {
     register long r0 __asm__("r0") = fd;
     register long r1 __asm__("r1") = offset;
     register long r2 __asm__("r2") = whence;
-    __asm__ volatile("swi #0" : "=r"(r0) : "r"(r7), "r"(r0), "r"(r1), "r"(r2) : "memory");
+    __asm__ volatile("swi #0" : "+r"(r0) : "r"(r7), "r"(r1), "r"(r2) : "memory");
+    return r0;
+}
+
+static inline long sys_ioctl(long fd, unsigned long req, void *arg) {
+    register long r7 __asm__("r7") = 54; /* __NR_ioctl */
+    register long r0 __asm__("r0") = fd;
+    register long r1 __asm__("r1") = (long)req;
+    register long r2 __asm__("r2") = (long)arg;
+    __asm__ volatile("swi #0" : "+r"(r0) : "r"(r7), "r"(r1), "r"(r2) : "memory");
     return r0;
 }
 
@@ -50,6 +59,27 @@ static inline void sys_exit(long status) {
     __asm__ volatile("swi #0" : : "r"(r7), "r"(r0));
     while (1) {}
 }
+
+/* Terminal / TTY Ioctls and Termios Structure for ARM32 Linux */
+#define TCGETS   0x5401
+#define TCSETS   0x5402
+#define FIONREAD 0x541B
+
+#define ICANON   0000002
+#define ECHO     0000010
+
+#define VMIN     6
+#define VTIME    5
+#define NCCS     19
+
+struct termios {
+    unsigned int c_iflag;      /* input mode flags */
+    unsigned int c_oflag;      /* output mode flags */
+    unsigned int c_cflag;      /* control mode flags */
+    unsigned int c_lflag;      /* local mode flags */
+    unsigned char c_line;      /* line discipline */
+    unsigned char c_cc[NCCS];  /* control characters */
+};
 
 #define FB_WIDTH  1920
 #define FB_HEIGHT 1080
@@ -80,6 +110,26 @@ static int my_strlen(const char *s) {
 
 static void print_str(const char *s) {
     sys_write(1, s, my_strlen(s));
+}
+
+static void print_dec(long val) {
+    char buf[32];
+    int i = 0;
+    if (val < 0) {
+        print_str("-");
+        val = -val;
+    }
+    if (val == 0) {
+        print_str("0");
+        return;
+    }
+    while (val > 0 && i < 30) {
+        buf[i++] = '0' + (val % 10);
+        val /= 10;
+    }
+    for (int j = i - 1; j >= 0; j--) {
+        sys_write(1, &buf[j], 1);
+    }
 }
 
 static void draw_pixel(int x, int y, unsigned int color) {
@@ -172,14 +222,18 @@ static const struct CardInfo cards[6] = {
     {"Settings",     "Network / System",   "CONFIG",  0xFF8B5CF6}
 };
 
-static void flush_canvas(void) {
-    sys_lseek(g_fb_fd, 0, 0);
+static int flush_canvas(void) {
+    if (g_fb_fd < 0) return -1;
+    long l_ret = sys_lseek(g_fb_fd, 0, 0);
+    if (l_ret < 0) return (int)l_ret;
     for (int r = 0; r < FB_HEIGHT; r++) {
-        sys_write(g_fb_fd, &g_canvas[r * FB_WIDTH], FB_WIDTH * sizeof(unsigned int));
+        long w_ret = sys_write(g_fb_fd, &g_canvas[r * FB_WIDTH], FB_WIDTH * sizeof(unsigned int));
+        if (w_ret < 0) return (int)w_ret;
     }
+    return 0;
 }
 
-void render_tcl_dashboard(int selected_index) {
+void render_tcl_dashboard_full(int active_index, int focused_index) {
     /* 1. Background Canvas */
     fill_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_DARK_BG);
 
@@ -215,11 +269,12 @@ void render_tcl_dashboard(int selected_index) {
 
     for (int i = 0; i < 6; i++) {
         int cx = start_x + i * (card_w + card_spacing);
-        int is_sel = (i == selected_index);
+        int is_active = (i == active_index);
+        int is_focused = (i == focused_index);
 
-        unsigned int bg_color = is_sel ? COLOR_SEL_BG : COLOR_CARD_BG;
-        unsigned int border_color = is_sel ? COLOR_SEL_BORDER : COLOR_CARD_BORDER;
-        int border_thickness = is_sel ? 3 : 1;
+        unsigned int bg_color = is_focused ? COLOR_SEL_BG : (is_active ? 0xFF142438 : COLOR_CARD_BG);
+        unsigned int border_color = is_focused ? COLOR_SEL_BORDER : (is_active ? COLOR_GREEN : COLOR_CARD_BORDER);
+        int border_thickness = is_focused ? 3 : (is_active ? 2 : 1);
 
         fill_rect(cx, start_y, card_w, card_h, bg_color);
         draw_rect_border(cx, start_y, card_w, card_h, border_thickness, border_color);
@@ -227,13 +282,16 @@ void render_tcl_dashboard(int selected_index) {
         fill_rect(cx + 20, start_y + 20, 60, 60, cards[i].icon_color);
         draw_rect_border(cx + 20, start_y + 20, 60, 60, 1, COLOR_WHITE);
 
-        draw_string(cards[i].badge, cx + card_w - 75, start_y + 20, 1, is_sel ? COLOR_GOLD : COLOR_TEXT_DIM, 0);
+        draw_string(cards[i].badge, cx + card_w - 75, start_y + 20, 1, (is_focused || is_active) ? COLOR_GOLD : COLOR_TEXT_DIM, 0);
         draw_string(cards[i].title, cx + 20, start_y + 110, 2, COLOR_WHITE, 0);
-        draw_string(cards[i].sub, cx + 20, start_y + 155, 1, is_sel ? COLOR_SEL_BORDER : COLOR_TEXT_MUTED, 0);
+        draw_string(cards[i].sub, cx + 20, start_y + 155, 1, is_focused ? COLOR_SEL_BORDER : COLOR_TEXT_MUTED, 0);
 
-        if (is_sel) {
-            fill_rect(cx + 20, start_y + card_h - 45, card_w - 40, 26, COLOR_SEL_BORDER);
+        if (is_active) {
+            fill_rect(cx + 20, start_y + card_h - 45, card_w - 40, 26, is_focused ? COLOR_SEL_BORDER : COLOR_GREEN);
             draw_string("ACTIVE INPUT", cx + 70, start_y + card_h - 40, 1, COLOR_BLACK, 0);
+        } else if (is_focused) {
+            fill_rect(cx + 20, start_y + card_h - 45, card_w - 40, 26, COLOR_SEL_BORDER);
+            draw_string("PRESS OK TO SWITCH", cx + 35, start_y + card_h - 40, 1, COLOR_BLACK, 0);
         } else {
             draw_string("Press OK to Switch", cx + 20, start_y + card_h - 35, 1, COLOR_TEXT_DIM, 0);
         }
@@ -258,13 +316,17 @@ void render_tcl_dashboard(int selected_index) {
     fill_rect(50, foot_y, FB_WIDTH - 100, 60, 0xFF0B0E14);
     draw_rect_border(50, foot_y, FB_WIDTH - 100, 60, 1, 0xFF1F2937);
 
-    draw_string("REMOTE CONTROL KEYS:  [< / >] Select Input    [OK / ENTER] Switch Input    [1-6] Direct Card Jump    [Q] Exit To Shell", 110, foot_y + 22, 1, COLOR_SEL_BORDER, 0);
+    draw_string("REMOTE CONTROL KEYS:  [< / >] Focus Input    [OK / ENTER] Switch Input    [1-6] Jump Card    [Q] Quit", 110, foot_y + 22, 1, COLOR_SEL_BORDER, 0);
 
     /* 7. SMPTE 8-Color Calibration Bars */
     draw_smpte_bars(990, 70);
     fill_rect(0, 1060, FB_WIDTH, 20, COLOR_BLACK);
 
     flush_canvas();
+}
+
+void render_tcl_dashboard(int selected_index) {
+    render_tcl_dashboard_full(selected_index, selected_index);
 }
 
 int my_strcmp(const char *a, const char *b) {
@@ -277,6 +339,144 @@ int parse_card_arg(const char *s) {
         return s[0] - '0';
     }
     return 0;
+}
+
+static void run_event_loop(int selected) {
+    struct termios old_tio, raw_tio;
+    long tio_ok = sys_ioctl(0, TCGETS, &old_tio);
+    int raw_mode_active = 0;
+    if (tio_ok == 0) {
+        raw_tio = old_tio;
+        raw_tio.c_lflag &= ~(ICANON | ECHO);
+        raw_tio.c_cc[VMIN] = 1;
+        raw_tio.c_cc[VTIME] = 0;
+        long set_rc = sys_ioctl(0, TCSETS, &raw_tio);
+        if (set_rc == 0) {
+            raw_mode_active = 1;
+        } else {
+            print_str("[-] FAILED: sys_ioctl TCSETS failed: rc=");
+            print_dec(set_rc);
+            print_str(", continuing in canonical mode\n");
+        }
+    } else {
+        print_str("[-] FAILED: sys_ioctl TCGETS failed: rc=");
+        print_dec(tio_ok);
+        print_str(", continuing in canonical mode\n");
+    }
+
+    int active_input = selected;
+    int focused_input = selected;
+
+    render_tcl_dashboard_full(active_input, focused_input);
+    print_str("\n[*] Interactive TV Remote Control Active.\n");
+    print_str("[*] Controls: '1'-'6' Direct Jump | 'h'/'l' or Arrows/< >: Focus | Enter/OK: Switch Input | 'b': SMPTE Bars | 't': Dashboard | 'q': Quit\n");
+
+    char buf[16];
+    while (1) {
+        long n = sys_read(0, buf, sizeof(buf) - 1);
+        if (n <= 0) break;
+        buf[n] = '\0';
+
+        char ch = buf[0];
+
+        /* Handle escape sequences for arrow keys and special keys */
+        if (ch == '\x1b') {
+            if (n == 1) {
+                int avail = 0;
+                sys_ioctl(0, FIONREAD, &avail);
+                if (avail > 0) {
+                    long n2 = sys_read(0, buf + 1, sizeof(buf) - 2);
+                    if (n2 > 0) {
+                        n += n2;
+                        buf[n] = '\0';
+                    }
+                }
+            }
+
+            if (n >= 3 && buf[1] == '[') {
+                if (buf[2] == 'D' || buf[2] == 'A') {
+                    /* Left / Up Arrow */
+                    focused_input = (focused_input > 0) ? focused_input - 1 : 5;
+                    render_tcl_dashboard_full(active_input, focused_input);
+                    print_str("[+] Focus Left -> ");
+                    print_str(cards[focused_input].title);
+                    print_str(" (Press Enter/OK to switch)\n");
+                    continue;
+                } else if (buf[2] == 'C' || buf[2] == 'B') {
+                    /* Right / Down Arrow */
+                    focused_input = (focused_input < 5) ? focused_input + 1 : 0;
+                    render_tcl_dashboard_full(active_input, focused_input);
+                    print_str("[+] Focus Right -> ");
+                    print_str(cards[focused_input].title);
+                    print_str(" (Press Enter/OK to switch)\n");
+                    continue;
+                }
+            } else if (n == 1) {
+                print_str("[*] ESC pressed. Exiting interactive TV remote session.\n");
+                break;
+            }
+        }
+
+        /* Quit keys: 'q', 'Q', Ctrl-C (3), Ctrl-D (4) */
+        if (ch == 'q' || ch == 'Q' || ch == 3 || ch == 4) {
+            print_str("[*] Exiting interactive TV remote session.\n");
+            break;
+        }
+
+        /* Enter / OK: Execute input switching */
+        if (ch == '\r' || ch == '\n') {
+            active_input = focused_input;
+            render_tcl_dashboard_full(active_input, focused_input);
+            print_str("[+] OK/Enter: Switched Active Input -> ");
+            print_str(cards[active_input].title);
+            print_str("\n");
+        }
+        /* Direct card selection '1' - '6' */
+        else if (ch >= '1' && ch <= '6') {
+            focused_input = ch - '1';
+            active_input = focused_input;
+            render_tcl_dashboard_full(active_input, focused_input);
+            print_str("[+] Direct Jump & Switched Active Input: ");
+            print_str(cards[active_input].title);
+            print_str("\n");
+        }
+        /* Left navigation */
+        else if (ch == 'h' || ch == 'H' || ch == '<' || ch == ',' || ch == 'a' || ch == 'A') {
+            focused_input = (focused_input > 0) ? focused_input - 1 : 5;
+            render_tcl_dashboard_full(active_input, focused_input);
+            print_str("[+] Focus Left -> ");
+            print_str(cards[focused_input].title);
+            print_str(" (Press Enter/OK to switch)\n");
+        }
+        /* Right navigation */
+        else if (ch == 'l' || ch == 'L' || ch == '>' || ch == '.' || ch == 'd' || ch == 'D') {
+            focused_input = (focused_input < 5) ? focused_input + 1 : 0;
+            render_tcl_dashboard_full(active_input, focused_input);
+            print_str("[+] Focus Right -> ");
+            print_str(cards[focused_input].title);
+            print_str(" (Press Enter/OK to switch)\n");
+        }
+        /* SMPTE color bars */
+        else if (ch == 'b' || ch == 'B') {
+            draw_smpte_bars(0, FB_HEIGHT);
+            flush_canvas();
+            print_str("[+] Rendered full-screen SMPTE 1080p Calibration Bars. Press 't' to restore dashboard.\n");
+        }
+        /* Restore dashboard */
+        else if (ch == 't' || ch == 'T') {
+            render_tcl_dashboard_full(active_input, focused_input);
+            print_str("[+] Restored TCL Smart TV Dashboard.\n");
+        }
+    }
+
+    if (raw_mode_active) {
+        long rest_rc = sys_ioctl(0, TCSETS, &old_tio);
+        if (rest_rc != 0) {
+            print_str("[-] FAILED: sys_ioctl restore TCSETS failed: rc=");
+            print_dec(rest_rc);
+            print_str("\n");
+        }
+    }
 }
 
 void main_entry(unsigned long *sp) {
@@ -331,39 +531,7 @@ void main_entry(unsigned long *sp) {
     }
 
     if (interactive) {
-        render_tcl_dashboard(selected);
-        print_str("\n[*] Interactive TV Remote Control Active.\n");
-        print_str("[*] Press '1'-'6' to jump cards, 'h'/'l' (or Left/Right) to navigate, 'q' to quit:\n");
-
-        char buf[8];
-        while (1) {
-            long n = sys_read(0, buf, sizeof(buf));
-            if (n <= 0) break;
-
-            char ch = buf[0];
-            if (ch == 'q' || ch == 'Q') {
-                print_str("[*] Exiting interactive TV remote session.\n");
-                break;
-            } else if (ch >= '1' && ch <= '6') {
-                selected = ch - '1';
-                render_tcl_dashboard(selected);
-                print_str("[+] Selected Input: ");
-                print_str(cards[selected].title);
-                print_str("\n");
-            } else if (ch == 'h' || (n >= 3 && buf[0] == '\x1b' && buf[1] == '[' && buf[2] == 'D')) {
-                selected = (selected > 0) ? selected - 1 : 5;
-                render_tcl_dashboard(selected);
-                print_str("[+] Left -> ");
-                print_str(cards[selected].title);
-                print_str("\n");
-            } else if (ch == 'l' || (n >= 3 && buf[0] == '\x1b' && buf[1] == '[' && buf[2] == 'C')) {
-                selected = (selected < 5) ? selected + 1 : 0;
-                render_tcl_dashboard(selected);
-                print_str("[+] Right -> ");
-                print_str(cards[selected].title);
-                print_str("\n");
-            }
-        }
+        run_event_loop(selected);
     }
 
     sys_close(g_fb_fd);

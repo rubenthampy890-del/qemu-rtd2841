@@ -7,6 +7,8 @@ import subprocess
 import sys
 import os
 import time
+import selectors
+import signal
 
 try:
     import fcntl
@@ -62,6 +64,23 @@ def find_storage():
             return c
     return None
 
+current_proc = None
+
+def sig_handler(signum, frame):
+    global current_proc
+    if current_proc and current_proc.poll() is None:
+        try:
+            os.killpg(os.getpgid(current_proc.pid), signal.SIGKILL)
+        except Exception:
+            pass
+    sys.exit(128 + signum)
+
+try:
+    signal.signal(signal.SIGINT, sig_handler)
+    signal.signal(signal.SIGTERM, sig_handler)
+except Exception:
+    pass
+
 def safe_print(s):
     try:
         sys.stdout.write(s)
@@ -70,6 +89,7 @@ def safe_print(s):
         pass
 
 def run_test(name, extra_args, pass_marker, kernel_bin=None, timeout_sec=10.0):
+    global current_proc
     qemu_bin = find_qemu()
     if not qemu_bin:
         print("[-] Error: qemu-system-aarch64 binary not found.", file=sys.stderr)
@@ -99,36 +119,105 @@ def run_test(name, extra_args, pass_marker, kernel_bin=None, timeout_sec=10.0):
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1
+        preexec_fn=os.setsid,
     )
+    current_proc = proc
+
+    # Set stdout pipe to non-blocking mode
+    os.set_blocking(proc.stdout.fileno(), False)
+
+    sel = selectors.DefaultSelector()
+    sel.register(proc.stdout, selectors.EVENT_READ)
 
     passed = False
     start_time = time.time()
+    line_buf = ""
 
     output_lines = []
     try:
         while True:
-            if time.time() - start_time > timeout_sec:
-                print(f"[-] Test timed out after {timeout_sec}s!", file=sys.stderr)
+            now = time.time()
+            elapsed = now - start_time
+            if elapsed > timeout_sec:
+                print(f"\n[-] Test timed out after {timeout_sec:.1f}s!", file=sys.stderr)
                 break
 
-            line = proc.stdout.readline()
-            if not line and proc.poll() is not None:
-                break
-            if line:
-                output_lines.append(line)
-                safe_print(line)
-                if pass_marker in line:
-                    passed = True
+            remaining = timeout_sec - elapsed
+            events = sel.select(timeout=max(0.01, min(remaining, 0.2)))
+
+            if events:
+                try:
+                    chunk = os.read(proc.stdout.fileno(), 4096)
+                except (BlockingIOError, InterruptedError):
+                    continue
+                except OSError:
                     break
+
+                if not chunk:
+                    # Pipe closed / EOF: break out to drain remaining line_buf
+                    break
+
+                text = chunk.decode("utf-8", errors="replace")
+                line_buf += text
+                while "\n" in line_buf:
+                    line, line_buf = line_buf.split("\n", 1)
+                    full_line = line + "\n"
+                    output_lines.append(full_line)
+                    safe_print(full_line)
+                    if pass_marker in full_line:
+                        passed = True
+                        break
+                if passed:
+                    break
+            else:
+                # Timeout on selector; check if process terminated
+                if proc.poll() is not None:
+                    break
+
+        # Drain any remaining bytes from pipe buffer and process line_buf
+        try:
+            while True:
+                chunk = os.read(proc.stdout.fileno(), 4096)
+                if not chunk:
+                    break
+                line_buf += chunk.decode("utf-8", errors="replace")
+        except (BlockingIOError, OSError):
+            pass
+
+        while "\n" in line_buf:
+            line, line_buf = line_buf.split("\n", 1)
+            full_line = line + "\n"
+            output_lines.append(full_line)
+            safe_print(full_line)
+            if pass_marker in full_line:
+                passed = True
+
+        if line_buf:
+            output_lines.append(line_buf + "\n")
+            safe_print(line_buf + "\n")
+            if pass_marker in line_buf:
+                passed = True
+
     finally:
+        try:
+            sel.unregister(proc.stdout)
+        except Exception:
+            pass
+        sel.close()
         if proc.poll() is None:
-            proc.terminate()
             try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
                 proc.wait(timeout=2)
+            except (ProcessLookupError, OSError):
+                pass
             except subprocess.TimeoutExpired:
-                proc.kill()
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                    proc.wait(timeout=1)
+                except Exception:
+                    pass
+        current_proc = None
 
     if passed:
         print(f"[+] CI TEST PASSED: {name}\n")
@@ -183,7 +272,9 @@ def main():
         if not t3:
             success = False
     else:
-        print("[!] Note: Linux zImage or emmc.raw not present; skipping full OS network verification test.")
+        print("[-] Error: Linux zImage or emmc.raw not present; skipping full OS network verification test.", file=sys.stderr)
+        if os.environ.get("CI") or os.environ.get("STRICT_CI"):
+            success = False
 
     if not success:
         sys.exit(1)

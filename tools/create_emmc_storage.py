@@ -157,14 +157,27 @@ def build_system_image(workspace_root):
     ]
     run_cmd(cmd)
 
-    # Build standalone mini_init if present
+    # Build standalone mini_init and fb_test binaries if sources are present
     mini_init_src = os.path.join(workspace_root, "tools", "mini_init.c")
     mini_init_bin = os.path.join(staging_dir, "mini_init")
+    fb_test_src = os.path.join(workspace_root, "tools", "fb_test.c")
+    fb_test_bin = os.path.join(staging_dir, "fb_test")
+
+    gcc_bin = shutil.which("arm-none-eabi-gcc") or ("/opt/homebrew/bin/arm-none-eabi-gcc" if os.path.isfile("/opt/homebrew/bin/arm-none-eabi-gcc") else None)
+
     if os.path.isfile(mini_init_src):
+        if not gcc_bin:
+            print("[-] Error: arm-none-eabi-gcc cross-compiler is required to build init but was not found.")
+            sys.exit(1)
         print("[*] Compiling standalone mini_init binary...")
-        gcc_bin = shutil.which("arm-none-eabi-gcc") or "/opt/homebrew/bin/arm-none-eabi-gcc"
-        if os.path.isfile(gcc_bin):
-            run_cmd([gcc_bin, "-nostdlib", "-static", "-fno-builtin", "-O2", mini_init_src, "-o", mini_init_bin])
+        run_cmd([gcc_bin, "-nostdlib", "-static", "-fno-builtin", "-O2", mini_init_src, "-o", mini_init_bin])
+
+    if os.path.isfile(fb_test_src):
+        if not gcc_bin:
+            print("[-] Error: arm-none-eabi-gcc cross-compiler is required to build fb_test but was not found.")
+            sys.exit(1)
+        print("[*] Compiling standalone fb_test binary...")
+        run_cmd([gcc_bin, "-nostdlib", "-static", "-fno-builtin", "-Wall", "-Wextra", "-O2", f"-I{os.path.join(workspace_root, 'tools')}", fb_test_src, "-o", fb_test_bin])
 
     # Generate debugfs command file for Android TV postprocess.sh ownership & SELinux contexts
     print("[*] Normalizing file ownership, permissions & SELinux xattrs in system.img via debugfs...")
@@ -182,6 +195,13 @@ def build_system_image(workspace_root):
         cmds.append(f"write {mini_init_bin} init")
         cmds.append("set_inode_field init mode 0100755")
         cmds.append(f"ea_set init security.selinux u:object_r:init_exec:s0")
+
+    if os.path.isfile(fb_test_bin):
+        cmds.append(f"write {fb_test_bin} bin/fb_test")
+        cmds.append("set_inode_field bin/fb_test mode 0100755")
+        cmds.append("set_inode_field bin/fb_test uid 0")
+        cmds.append("set_inode_field bin/fb_test gid 2000")
+        cmds.append(f"ea_set bin/fb_test security.selinux u:object_r:system_file:s0")
 
     for root, dirs, files in os.walk(system_extracted):
         for item in dirs + files:
@@ -273,23 +293,31 @@ def build_vendor_image(workspace_root):
     fc_rules = load_file_contexts(plat_fc_path) + load_file_contexts(vendor_fc_path)
     print(f"[+] Loaded {len(fc_rules)} SELinux context rules for vendor")
 
+    is_darwin = (sys.platform == "darwin")
     dmg_path = os.path.join(staging_dir, "vendor_cs.dmg")
     mount_dir = os.path.join(staging_dir, "vendor_cs_mnt")
 
-    if os.path.exists(mount_dir):
-        subprocess.run(["hdiutil", "detach", mount_dir], capture_output=True)
-        shutil.rmtree(mount_dir, ignore_errors=True)
-    if os.path.exists(dmg_path):
-        os.remove(dmg_path)
+    if is_darwin:
+        if os.path.exists(mount_dir):
+            subprocess.run(["hdiutil", "detach", mount_dir], capture_output=True)
+            shutil.rmtree(mount_dir, ignore_errors=True)
+        if os.path.exists(dmg_path):
+            os.remove(dmg_path)
+    else:
+        if os.path.exists(mount_dir):
+            shutil.rmtree(mount_dir, ignore_errors=True)
 
     os.makedirs(mount_dir, exist_ok=True)
 
     try:
-        print("[*] Creating temporary Case-sensitive APFS DMG to preserve case fidelity...")
-        run_cmd(["hdiutil", "create", "-size", "2500m", "-fs", "Case-sensitive APFS", "-volname", "VendorCS", dmg_path])
-        run_cmd(["hdiutil", "attach", dmg_path, "-mountpoint", mount_dir])
+        if is_darwin:
+            print("[*] Creating temporary Case-sensitive APFS DMG to preserve case fidelity...")
+            run_cmd(["hdiutil", "create", "-size", "2500m", "-fs", "Case-sensitive APFS", "-volname", "VendorCS", dmg_path])
+            run_cmd(["hdiutil", "attach", dmg_path, "-mountpoint", mount_dir])
+        else:
+            print("[*] Staging vendor directory directly on native case-sensitive filesystem...")
 
-        print("[*] Extracting vendor.tar into Case-sensitive mount...")
+        print("[*] Extracting vendor.tar into staging directory...")
         run_cmd(["tar", "-xf", vendor_tar, "-C", mount_dir])
 
         # Verify case-sensitive collision preservation
@@ -384,12 +412,22 @@ def build_vendor_image(workspace_root):
         os.remove(cmd_file)
 
     finally:
-        print("[*] Detaching and unmounting temporary DMG...")
-        subprocess.run(["hdiutil", "detach", mount_dir], capture_output=True)
-        if os.path.exists(mount_dir):
-            os.rmdir(mount_dir)
-        if os.path.exists(dmg_path):
-            os.remove(dmg_path)
+        if is_darwin:
+            print("[*] Detaching and unmounting temporary DMG...")
+            det_res = subprocess.run(["hdiutil", "detach", mount_dir], capture_output=True)
+            if det_res.returncode != 0:
+                subprocess.run(["hdiutil", "detach", mount_dir, "-force"], capture_output=True)
+            if os.path.exists(mount_dir) and not os.path.ismount(mount_dir):
+                shutil.rmtree(mount_dir, ignore_errors=True)
+            if os.path.exists(dmg_path):
+                try:
+                    os.remove(dmg_path)
+                except OSError:
+                    pass
+        else:
+            print("[*] Cleaning up temporary staging directory...")
+            if os.path.exists(mount_dir):
+                shutil.rmtree(mount_dir, ignore_errors=True)
 
     # Verify with e2fsck
     print("[*] Verifying vendor.img with e2fsck...")
@@ -517,9 +555,14 @@ def create_gpt_structures(total_sectors, partitions):
     }
 
 
-def build_composite_emmc(workspace_root, system_img, vendor_img):
+def build_composite_emmc(workspace_root, system_img, vendor_img, output_path=None):
     staging_dir = os.path.join(workspace_root, "staging")
-    emmc_raw = os.path.join(staging_dir, "emmc.raw")
+    if output_path:
+        emmc_raw = os.path.abspath(output_path)
+        if os.path.isdir(emmc_raw):
+            emmc_raw = os.path.join(emmc_raw, "storage.img")
+    else:
+        emmc_raw = os.path.join(staging_dir, "emmc.raw")
 
     # 4 GiB eMMC geometry (matches part_targetM=4096 and QEMU SDHC requirements)
     total_size_mb = 4096
@@ -573,6 +616,8 @@ def build_composite_emmc(workspace_root, system_img, vendor_img):
     gpt = create_gpt_structures(total_sectors, partitions)
 
     print(f"[*] Writing composite disk image: {emmc_raw}...")
+    if os.path.dirname(emmc_raw):
+        os.makedirs(os.path.dirname(emmc_raw), exist_ok=True)
     with open(emmc_raw, "wb") as f:
         # Preallocate total file size
         f.truncate(total_size_bytes)
@@ -717,9 +762,20 @@ def verify_emmc_raw(emmc_raw):
 def main():
     workspace_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
+    if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
+        print(f"Usage: {sys.argv[0]} [output_path]")
+        print("  Builds composite eMMC storage image for RTD2841 QEMU emulation.")
+        print("  Example: python3 tools/create_emmc_storage.py storage.img")
+        print("  Default destination: staging/emmc.raw")
+        sys.exit(0)
+
+    output_path = sys.argv[1] if len(sys.argv) > 1 else None
+    if output_path:
+        print(f"[*] Custom output destination specified: {output_path}")
+
     system_img, _ = build_system_image(workspace_root)
     vendor_img, _ = build_vendor_image(workspace_root)
-    emmc_raw, partitions, gpt = build_composite_emmc(workspace_root, system_img, vendor_img)
+    emmc_raw, partitions, gpt = build_composite_emmc(workspace_root, system_img, vendor_img, output_path=output_path)
     verify_emmc_raw(emmc_raw)
 
 

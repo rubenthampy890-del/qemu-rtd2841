@@ -79,7 +79,7 @@ static void rtd2841_eth_tx(RTD2841EthState *s)
 {
     uint8_t pkt_buf[4096];
     size_t pkt_len = 0;
-    int max_desc = 256;
+    int max_desc = RTD2841_ETH_NUM_DESC;
     bool sent_any = false;
 
     if (!(s->chipcmd & 0x04) || !s->tx_desc_base) {
@@ -87,10 +87,13 @@ static void rtd2841_eth_tx(RTD2841EthState *s)
     }
 
     while (max_desc-- > 0) {
-        hwaddr desc_addr = s->tx_desc_base + (s->cur_tx * 16);
+        hwaddr desc_addr;
         uint32_t opts1;
         uint64_t dma_addr;
         uint32_t frag_len;
+
+        s->cur_tx %= RTD2841_ETH_NUM_DESC;
+        desc_addr = s->tx_desc_base + (s->cur_tx * 16);
 
         address_space_read(&address_space_memory, desc_addr,
                            MEMTXATTRS_UNSPECIFIED, &opts1, 4);
@@ -132,7 +135,7 @@ static void rtd2841_eth_tx(RTD2841EthState *s)
         if (opts1 & RTK_DESC_EOR) {
             s->cur_tx = 0;
         } else {
-            s->cur_tx++;
+            s->cur_tx = (s->cur_tx + 1) % RTD2841_ETH_NUM_DESC;
         }
     }
 
@@ -152,6 +155,7 @@ static bool rtd2841_eth_can_receive(NetClientState *nc)
         return false;
     }
 
+    s->cur_rx %= RTD2841_ETH_NUM_DESC;
     desc_addr = s->rx_desc_base + (s->cur_rx * 16);
     address_space_read(&address_space_memory, desc_addr,
                        MEMTXATTRS_UNSPECIFIED, &opts1, 4);
@@ -169,11 +173,13 @@ static ssize_t rtd2841_eth_receive(NetClientState *nc, const uint8_t *buf,
     uint64_t dma_addr;
     uint32_t eor;
     uint32_t opts1_le, opts2_le;
+    uint32_t buf_sz;
 
     if (!(s->chipcmd & 0x08) || !s->rx_desc_base) {
         return -1;
     }
 
+    s->cur_rx %= RTD2841_ETH_NUM_DESC;
     desc_addr = s->rx_desc_base + (s->cur_rx * 16);
     address_space_read(&address_space_memory, desc_addr,
                        MEMTXATTRS_UNSPECIFIED, &opts1, 4);
@@ -183,6 +189,15 @@ static ssize_t rtd2841_eth_receive(NetClientState *nc, const uint8_t *buf,
         s->intr_status |= 0x0080; /* Tx/Rx DescUnavail */
         rtd2841_eth_update_irq(s);
         return 0;
+    }
+
+    /* Clamp incoming packet length to descriptor buffer size */
+    buf_sz = opts1 & RTK_DESC_LEN_MASK;
+    if (buf_sz == 0) {
+        buf_sz = s->rx_max_size ? s->rx_max_size : 16384;
+    }
+    if (size > buf_sz) {
+        size = buf_sz;
     }
 
     address_space_read(&address_space_memory, desc_addr + 8,
@@ -206,7 +221,7 @@ static ssize_t rtd2841_eth_receive(NetClientState *nc, const uint8_t *buf,
     if (eor) {
         s->cur_rx = 0;
     } else {
-        s->cur_rx++;
+        s->cur_rx = (s->cur_rx + 1) % RTD2841_ETH_NUM_DESC;
     }
 
     s->intr_status |= 0x0001; /* RxOK */
@@ -240,8 +255,9 @@ static uint64_t rtd2841_eth_read(void *opaque, hwaddr addr, unsigned size)
     uint64_t val = 0;
 
     /* Handle MAC address registers: 0x00 .. 0x05 */
-    if (addr + size <= 6) {
-        for (unsigned i = 0; i < size; i++) {
+    if (addr < 6) {
+        int copy_len = MIN((int)size, 6 - (int)addr);
+        for (int i = 0; i < copy_len; i++) {
             val |= ((uint64_t)s->mac[addr + i]) << (i * 8);
         }
         return val;
@@ -349,8 +365,9 @@ static void rtd2841_eth_write(void *opaque, hwaddr addr, uint64_t val,
     RTD2841EthState *s = opaque;
 
     /* Handle MAC address registers: 0x00 .. 0x05 */
-    if (addr + size <= 6) {
-        for (unsigned i = 0; i < size; i++) {
+    if (addr < 6) {
+        int copy_len = MIN((int)size, 6 - (int)addr);
+        for (int i = 0; i < copy_len; i++) {
             s->mac[addr + i] = (val >> (i * 8)) & 0xff;
         }
         return;

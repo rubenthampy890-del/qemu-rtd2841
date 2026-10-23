@@ -1,8 +1,8 @@
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 4445f16..bde3979 100644
+index 4445f16..9682a8b 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -731,3 +731,13 @@ config AXIADO_EVK
+@@ -731,3 +731,14 @@ config AXIADO_EVK
      default y
      depends on TCG && ARM
      select AXIADO_SOC
@@ -16,6 +16,7 @@ index 4445f16..bde3979 100644
 +    select SERIAL_MM
 +    select UNIMP
 +    select PTIMER
++    select SDHCI
 diff --git a/hw/arm/meson.build b/hw/arm/meson.build
 index bcc068d..ed08c03 100644
 --- a/hw/arm/meson.build
