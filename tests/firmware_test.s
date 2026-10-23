@@ -61,7 +61,7 @@ msg_crlf:
     .asciz "\r\n"
     .align 2
 3:
-    /* 4. Realtek TC0 Hardware Timer Active Down-Count */
+    /* 4. Realtek TC0 Hardware Timer Active Up-Count */
     ldr r4, =0x1801B600       /* TC0 base */
     ldr r5, =0x000F0000
     str r5, [r4, #0x00]       /* TC0TVR */
