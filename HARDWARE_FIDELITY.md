@@ -24,7 +24,7 @@ Platform peripherals are categorized into four implementation tiers:
 | **Watchdog** | `0x18062200` | 256 B | SPI 0 (INTID 32) | **Register Stub** | Read/write register scaffold (`WDOG_TCWCR`, `WDOG_TCWTR`) to prevent kernel watchdog driver reboot loops. |
 | **TMU (Thermal)** | `0x18000000` | 1 KB | N/A | **Unimplemented** | Returns 0. Kernel thermal driver logs warning but boot continues. Safe for diagnostic and Linux boot paths. |
 | **SYSREG / Clocks** | `0x18000400` | 3 KB | N/A | **Unimplemented** | Returns 0. Fixed clock frequencies provided directly by Device Tree. |
-| **Mali GPU** | `0x18040000` | 16 KB | SPI 12 (INTID 44) | **Unimplemented** | Returns 0. OpenGL ES composition not yet active; SurfaceFlinger software composition fallback used. |
+| **Mali GPU** | `0x18040000` | 16 KB | SPI 12 (INTID 44) | **Unimplemented** | Returns 0. Hardware 3D graphics acceleration not implemented. |
 | **ARM TSG** | `0x1805C800` | 256 B | N/A | **Unimplemented** | Returns 0. Time-stamping generator registers return 0 safely. |
 | **SCU Control** | `0x18080000` | 4 KB | N/A | **Unimplemented** | Returns 0. CPU SMP coherency managed directly in software. |
 
