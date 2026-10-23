@@ -11,10 +11,13 @@
  *   0x20..0x3C : TIMER_TC0CVR .. TC7CVR    (current running counter, 8x u32)
  *   0x40..0x5C : TIMER_TC0CR  .. TC7CR     (control)
  *   0x60..0x7C : TIMER_TC0ICR .. TC7ICR    (interrupt control)
- *   0xE8       : TIMER_UMSK_ISR            (raw  IRQ status, bits [7:0] = TC7..TC0 raw w/ TC0->bit0)
- *   0xEC       : TIMER_ISR                 (masked IRQ status, W1C per driver: rtd_outl(TIMER_ISR, 1<<id))
+ *   0xE8       : TIMER_UMSK_ISR            (raw IRQ status, bits [7:0] =
+ *                                           TC7..TC0 raw w/ TC0->bit0)
+ *   0xEC       : TIMER_ISR                 (masked IRQ status, W1C per driver:
+ *                                           rtd_outl(TIMER_ISR, 1<<id))
  *
- * CR  bits: [31] tc_en (1=enable)  [30] tc_mode (1=periodic, 0=counter/one-shot)
+ * CR  bits: [31] tc_en (1=enable)
+ *           [30] tc_mode (1=periodic, 0=counter/one-shot)
  *           [29] tc_pause
  * ICR bits: [31] tc_ie
  *
@@ -47,9 +50,9 @@
 #include "qom/object.h"
 #include "hw/arm/rtd2841.h"
 
-#define RTD2841_TIMER_CLK       27000000ULL  /* TICK-OFFSET: TIMERINFO_BASE_CLOCK */
-#define RTD2841_TIMER_N         8            /* TC0..TC7                          */
-#define RTD2841_TIMER_IRQ       34           /* GIC INTID 34  (SPI 2, IRQ_TIMER)  */
+#define RTD2841_TIMER_CLK       27000000ULL /* TIMERINFO_BASE_CLOCK */
+#define RTD2841_TIMER_N         8           /* TC0..TC7 */
+#define RTD2841_TIMER_IRQ       34          /* GIC INTID 34 (SPI 2)            */
 
 /* ------------------------------------------------------------------ */
 /* Timer controller                                                    */
@@ -135,7 +138,12 @@ static void rtd2841_timer_update_irq(RTD2841TimerState *s)
 static void rtd2841_timer_expire(void *opaque)
 {
     Rtd2841TimerCb *c = opaque;
+    ptimer_state *t = c->parent->timer[c->id];
+    uint64_t limit = ptimer_get_limit(t);
 
+    if (limit > 0xFFFFFFFFULL) {
+        ptimer_set_limit(t, limit & 0xFFFFFFFFULL, 0);
+    }
     c->parent->isr |= (1u << c->id);
     rtd2841_timer_update_irq(c->parent);
 }
@@ -185,7 +193,7 @@ static uint64_t rtd2841_timer_read(void *opaque, hwaddr addr, unsigned size)
         id = (addr - R_CVR0) / 4;
         limit = ptimer_get_limit(s->timer[id]);
         count = ptimer_get_count(s->timer[id]);
-        return (limit >= count) ? (limit - count) : 0;
+        return (limit >= count) ? (uint32_t)(limit - count) : 0;
     } else if (addr < 0x60) {               /* TIMER_TCxCR */
         id = (addr - R_CR0) / 4;
         return s->cr[id];
@@ -226,10 +234,12 @@ static void rtd2841_timer_write(void *opaque, hwaddr addr, uint64_t val,
                 uint64_t count = ptimer_get_count(t);
                 uint64_t cur = (limit >= count) ? (limit - count) : 0;
                 uint64_t next;
+                uint64_t new_limit = val ? val : 0xFFFFFFFFULL;
                 if (val > cur) {
                     next = val - cur;
                 } else if (val < cur) {
-                    next = (0x100000000ULL - cur) + val;
+                    new_limit = 0x100000000ULL + val;
+                    next = new_limit - cur;
                 } else {
                     next = 1;
                 }
@@ -238,13 +248,13 @@ static void rtd2841_timer_write(void *opaque, hwaddr addr, uint64_t val,
                 }
 
                 ptimer_transaction_begin(t);
-                ptimer_set_limit(t, val ? val : 0xFFFFFFFF, 0);
+                ptimer_set_limit(t, new_limit, 0);
                 ptimer_set_count(t, next);
                 ptimer_run(t, (s->cr[id] & R_CR_PERIOD) ? 0 : 1);
                 ptimer_transaction_commit(t);
             } else {
                 ptimer_transaction_begin(t);
-                ptimer_set_limit(t, val ? val : 0xFFFFFFFF, 0);
+                ptimer_set_limit(t, val ? val : 0xFFFFFFFFULL, 0);
                 ptimer_transaction_commit(t);
             }
         }
@@ -255,8 +265,16 @@ static void rtd2841_timer_write(void *opaque, hwaddr addr, uint64_t val,
         id = (addr - R_CVR0) / 4;
         t = s->timer[id];
         limit = ptimer_get_limit(t);
+        if (limit == 0) {
+            limit = s->tvr[id] ? s->tvr[id] : 0xFFFFFFFFULL;
+            ptimer_set_limit(t, limit, 0);
+        }
+        if (limit < val) {
+            limit = val;
+            ptimer_set_limit(t, limit, 0);
+        }
         ptimer_transaction_begin(t);
-        ptimer_set_count(t, (val <= limit) ? (limit - val) : 0);
+        ptimer_set_count(t, limit - val);
         ptimer_transaction_commit(t);
         return;
     } else if (addr < 0x60) {               /* TIMER_TCxCR */
