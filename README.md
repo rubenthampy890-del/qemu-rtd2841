@@ -16,7 +16,10 @@ Used in many Android Smart TVs (TCL, Xiaomi, Hisense, etc.). This model lets you
 git clone https://github.com/rubenthampy890-del/qemu-rtd2841.git
 cd qemu-rtd2841
 
-# Run the bare-metal diagnostic test (CPU, GIC, TC0, SDHCI MMIO)
+# Run the full automated verification test suite (Core Diagnostics, eMMC Storage, Linux 4.4 Kernel Boot & Live Outbound Network Connectivity)
+python3 tests/run_ci_test.py
+
+# Run standalone bare-metal diagnostic test (CPU, GIC, TC0, SDHCI, RTL8168 MMIO)
 ./scripts/run_qemu.sh tests/firmware_test.bin
 
 # Run with 1080p display (Cocoa on macOS, or VNC)
@@ -31,8 +34,9 @@ Target: Realtek RTD2841 / TCL RT41 Chassis (tv030)
 ========================================================
 [PASS] CPU 0: ARM Cortex-A53 executing in AArch32 Mode.
 [PASS] GIC-400 Distributor (0x18081000): GICD_TYPER=0x00000067 (256 INTIDs verified).
-[PASS] TC0 Timer (0x1801B600): Active down-count verified (T0=0x000EFEF2, T1=0x000EFC4F @ 27MHz).
+[PASS] TC0 Timer (0x1801B600): Active up-count verified (T0=0x000001CB, T1=0x00000546 @ 27MHz).
 [PASS] SDHCI eMMC (0x18010800): Controller online (CAPAREG=0x057834B4, no card; optional: attach -drive file=storage.img,if=sd).
+[PASS] RTL8168 Ethernet (0x18016000): Controller online (TXCFG=0x50900800, PHYSTATUS=0x00000013, link UP).
 ========================================================
 [>>> ALL HARDWARE SUBSYSTEM VERIFICATION TESTS PASSED <<<]
 ========================================================
@@ -45,7 +49,7 @@ Target: Realtek RTD2841 / TCL RT41 Chassis (tv030)
 - **Cortex-A53 quad-core**: Pinned to AArch32 mode (`aarch64=false`) to match Realtek's 32-bit TV firmware stack. Core 0 boots directly; cores 1-3 start powered off and wait for PSCI `CPU_ON` or jump mailbox at `0x504`.
 - **GIC-400 (GICv2)**: Distributor at `0x18081000`, CPU interface at `0x18082000`, 256 IRQs.
 - **16550A UART0**: Base `0x18062300`, 4-byte register stride (`shift = 2`), 27 MHz clock. Mapped to stdio.
-- **Hardware Timers**: 8 independent 27 MHz down-counters (`TC0`..`TC7`) at `0x1801B600` with periodic reload, routed to GIC INTID 34.
+- **Hardware Timers**: 8 independent 27 MHz monotonic up-counters (`TC0`..`TC7`) at `0x1801B600` (reporting `limit - count` to CVR registers) with periodic reload, matching Realtek Linux `sched_clock` and routed to GIC INTID 34.
 - **Watchdog**: Stub at `0x18062200` to keep vendor driver probes from hanging.
 - **eMMC / SDHCI**: QEMU SysBus SDHCI controller at `0x18010800` (SPI 18 / INTID 50) for disk image mounting (`-drive file=...,if=sd`).
 - **Gigabit Ethernet**: RTL8168GU MAC at `0x18016000` (SPI 20 / INTID 52) with DMA rings, link state emulation, and QEMU SLIRP user networking (`-nic user,model=rtd2841-eth`).

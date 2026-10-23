@@ -114,6 +114,13 @@ python3 tools/create_emmc_storage.py storage.img
 
 ## Running & Testing
 
+### Automated Hardware & Linux CI Verification Suite
+Runs the end-to-end multi-suite test harness verifying Core Diagnostics, eMMC card insertion, and Linux 4.4 kernel boot with outbound network connectivity:
+
+```bash
+python3 tests/run_ci_test.py
+```
+
 ### Bare-Metal Hardware Diagnostics
 Runs the test firmware (`tests/firmware_test.bin`) over serial console:
 
@@ -162,13 +169,15 @@ Renders 8 SMPTE color bars into the 1920x1080 simple-framebuffer:
     -kernel /path/to/qemu-rtd2841/tests/firmware_fb_test.bin
 ```
 
-### Linux Kernel Boot with Device Tree
+### Linux Kernel Boot with RTL8168 Network & Storage
 ```bash
 ./build/qemu-system-aarch64 \
     -M rtd2841-tv030 \
+    -m 1024M \
     -kernel /path/to/zImage \
     -dtb /path/to/qemu-rtd2841/dts/rtd284x-tv030.dtb \
-    -drive file=storage.img,if=sd,format=raw \
-    -append "console=ttyS0,115200 root=/dev/mmcblk0p1 ro earlyprintk" \
+    -drive file=/path/to/emmc.raw,if=sd,format=raw \
+    -nic user,model=rtd2841-eth,hostfwd=tcp::5555-:5555 \
+    -append "console=ttyS0,115200 root=/dev/mmcblk0p1 rw rootwait earlyprintk" \
     -serial stdio
 ```
