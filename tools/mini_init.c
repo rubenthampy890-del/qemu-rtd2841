@@ -208,7 +208,7 @@ static const char msg_mount_proc[]   = "[+] Mounted /proc and /sys filesystems\n
 static const char msg_mount_vendor[] = "[+] Mounted /vendor from /dev/mmcblk0p2 (ext4)\n";
 static const char msg_mount_tmpfs[]  = "[+] Mounted tmpfs on /data, /cache, /tmp, /mnt, /storage\n";
 static const char msg_paint_fb[]     = "[+] Framebuffer /dev/fb0 updated: TCL Smart TV Dashboard rendered!\n";
-static const char msg_exec_sh[]      = "[+] Dropping into interactive Android root shell (/bin/sh)...\n\n";
+static const char msg_exec_sh[]      = "[+] Dropping into interactive Linux root shell (/bin/sh)...\n\n";
 
 static const char str_proc[]        = "proc";
 static const char str_sysfs[]       = "sysfs";

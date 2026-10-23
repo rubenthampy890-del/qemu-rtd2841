@@ -25,6 +25,8 @@ Platform peripherals are categorized into four implementation tiers:
 | **TMU (Thermal)** | `0x18000000` | 1 KB | N/A | **Unimplemented** | Returns 0. Kernel thermal driver logs warning but boot continues. Safe for diagnostic and Linux boot paths. |
 | **SYSREG / Clocks** | `0x18000400` | 3 KB | N/A | **Unimplemented** | Returns 0. Fixed clock frequencies provided directly by Device Tree. |
 | **Mali GPU** | `0x18040000` | 16 KB | SPI 12 (INTID 44) | **Unimplemented** | Returns 0. Hardware 3D graphics acceleration not implemented. |
+| **Audio DSP / ADMA** | `0x18006600` | 4 KB | SPI 5 (INTID 37) | **Unimplemented** | Returns 0. Audio DSP and ADMA ring buffers not implemented. |
+| **IR Remote Decoder** | `0x18061400` | 256 B | SPI 25 (INTID 57) | **Unimplemented** | Returns 0. Hardware IR receiver peripheral not implemented. |
 | **ARM TSG** | `0x1805C800` | 256 B | N/A | **Unimplemented** | Returns 0. Time-stamping generator registers return 0 safely. |
 | **SCU Control** | `0x18080000` | 4 KB | N/A | **Unimplemented** | Returns 0. CPU SMP coherency managed directly in software. |
 
@@ -185,5 +187,5 @@ Platform peripherals are categorized into four implementation tiers:
   - `0xD3`: `MCU` (Link list status: `0x32` -> `LINK_LIST_RDY | RXTX_EMPTY`)
   - `0xE4..0xEB`: `RxAddrHigh`/`RxAddrLow` (RX Descriptor Ring physical base)
 - **DMA Engine**: Direct physical memory access via `&address_space_memory` with circular descriptor ring ownership management (bit 31 `OWN`).
-- **QEMU Backend**: Backed by QEMU SLIRP user network (`-nic user,model=rtd2841-eth`) with ADB port forwarding (`hostfwd=tcp::5555-:5555`).
+- **QEMU Backend**: Backed by QEMU SLIRP user network (`-nic user,model=rtd2841-eth`) with host port forwarding (`hostfwd=tcp::5555-:5555`).
 
