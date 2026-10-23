@@ -88,7 +88,7 @@ static void rtd2841_eth_tx(RTD2841EthState *s)
 
     while (max_desc-- > 0) {
         hwaddr desc_addr;
-        uint32_t opts1;
+        uint32_t opts1, opts1_le;
         uint64_t dma_addr;
         uint32_t frag_len;
 
@@ -128,7 +128,7 @@ static void rtd2841_eth_tx(RTD2841EthState *s)
         }
 
         opts1 &= ~RTK_DESC_OWN;
-        uint32_t opts1_le = cpu_to_le32(opts1);
+        opts1_le = cpu_to_le32(opts1);
         address_space_write(&address_space_memory, desc_addr,
                             MEMTXATTRS_UNSPECIFIED, &opts1_le, 4);
 
@@ -178,6 +178,9 @@ static ssize_t rtd2841_eth_receive(NetClientState *nc, const uint8_t *buf,
     if (!(s->chipcmd & 0x08) || !s->rx_desc_base) {
         return -1;
     }
+    if (size == 0) {
+        return 0;
+    }
 
     s->cur_rx %= RTD2841_ETH_NUM_DESC;
     desc_addr = s->rx_desc_base + (s->cur_rx * 16);
@@ -195,6 +198,9 @@ static ssize_t rtd2841_eth_receive(NetClientState *nc, const uint8_t *buf,
     buf_sz = opts1 & RTK_DESC_LEN_MASK;
     if (buf_sz == 0) {
         buf_sz = s->rx_max_size ? s->rx_max_size : 16384;
+    }
+    if (buf_sz > RTK_DESC_LEN_MASK - 4) {
+        buf_sz = RTK_DESC_LEN_MASK - 4;
     }
     if (size > buf_sz) {
         size = buf_sz;

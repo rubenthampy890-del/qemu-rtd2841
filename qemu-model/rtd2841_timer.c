@@ -52,7 +52,7 @@
 
 #define RTD2841_TIMER_CLK       27000000ULL /* TIMERINFO_BASE_CLOCK */
 #define RTD2841_TIMER_N         8           /* TC0..TC7 */
-#define RTD2841_TIMER_IRQ       34          /* GIC INTID 34 (SPI 2)            */
+#define RTD2841_TIMER_IRQ       34          /* GIC INTID 34 (SPI 2) */
 
 /* ------------------------------------------------------------------ */
 /* Timer controller                                                    */
@@ -142,7 +142,9 @@ static void rtd2841_timer_expire(void *opaque)
     uint64_t limit = ptimer_get_limit(t);
 
     if (limit > 0xFFFFFFFFULL) {
+        ptimer_transaction_begin(t);
         ptimer_set_limit(t, limit & 0xFFFFFFFFULL, 0);
+        ptimer_transaction_commit(t);
     }
     c->parent->isr |= (1u << c->id);
     rtd2841_timer_update_irq(c->parent);
@@ -265,6 +267,7 @@ static void rtd2841_timer_write(void *opaque, hwaddr addr, uint64_t val,
         id = (addr - R_CVR0) / 4;
         t = s->timer[id];
         limit = ptimer_get_limit(t);
+        ptimer_transaction_begin(t);
         if (limit == 0) {
             limit = s->tvr[id] ? s->tvr[id] : 0xFFFFFFFFULL;
             ptimer_set_limit(t, limit, 0);
@@ -273,7 +276,6 @@ static void rtd2841_timer_write(void *opaque, hwaddr addr, uint64_t val,
             limit = val;
             ptimer_set_limit(t, limit, 0);
         }
-        ptimer_transaction_begin(t);
         ptimer_set_count(t, limit - val);
         ptimer_transaction_commit(t);
         return;
