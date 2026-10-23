@@ -19,7 +19,7 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential \
             git \
             ninja-build \
@@ -30,7 +30,6 @@ jobs:
             device-tree-compiler \
             libslirp-dev \
             python3 \
-            gcc-arm-none-eabi \
             binutils-arm-none-eabi
 
       - name: Fetch Pinned Upstream QEMU Revision
