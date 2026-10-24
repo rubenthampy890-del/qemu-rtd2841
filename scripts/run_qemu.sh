@@ -11,8 +11,11 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 QEMU_BIN="${QEMU_BIN:-}"
 if [ -z "${QEMU_BIN}" ]; then
     for cand in \
+        "${REPO_ROOT}/qemu-upstream/build/qemu-system-aarch64" \
         "${REPO_ROOT}/qemu/build/qemu-system-aarch64" \
         "${REPO_ROOT}/../tcl-firmware-re/qemu/build/qemu-system-aarch64" \
+        "${HOME}/.gemini/antigravity/scratch/tcl-firmware-re/qemu/build/qemu-system-aarch64" \
+        "/Users/basilthampy/.gemini/antigravity/scratch/tcl-firmware-re/qemu/build/qemu-system-aarch64" \
         "$(command -v qemu-system-aarch64 2>/dev/null || true)"; do
         if [ -n "${cand}" ] && [ -x "${cand}" ]; then
             QEMU_BIN="${cand}"
@@ -65,6 +68,12 @@ if [ -z "${DISPLAY_BACKEND:-}" ]; then
     fi
 fi
 
+# Monitor and Control socket configuration
+# Supports -monitor unix:/tmp/qemu-monitor.sock,server,nowait or both QMP and HMP cleanly.
+QEMU_MONITOR_SOCK="${QEMU_MONITOR_SOCK:-/tmp/qemu-monitor.sock}"
+QEMU_QMP_SOCK="${QEMU_QMP_SOCK:-/tmp/qemu-qmp.sock}"
+QEMU_MONITOR_MODE="${QEMU_MONITOR_MODE:-both}"
+
 QEMU_ARGS=(
     -M rtd2841-tv030
     -m 1024M
@@ -73,8 +82,22 @@ QEMU_ARGS=(
     -serial stdio
     -display "${DISPLAY_BACKEND}"
     -nic "user,model=rtd2841-eth,hostfwd=tcp::5555-:5555"
-    -qmp unix:/tmp/qemu-monitor.sock,server,nowait
 )
+
+case "${QEMU_MONITOR_MODE}" in
+    qmp)
+        QEMU_ARGS+=(-qmp "unix:${QEMU_MONITOR_SOCK},server,nowait")
+        ;;
+    hmp)
+        QEMU_ARGS+=(-monitor "unix:${QEMU_MONITOR_SOCK},server,nowait")
+        ;;
+    both|*)
+        QEMU_ARGS+=(
+            -monitor "unix:${QEMU_MONITOR_SOCK},server,nowait"
+            -qmp "unix:${QEMU_QMP_SOCK},server,nowait"
+        )
+        ;;
+esac
 
 # Attach raw eMMC storage image to SDHCI host controller if present
 STORAGE_IMAGE="${STORAGE_IMAGE:-}"
