@@ -17,9 +17,9 @@ Platform peripherals are categorized into four implementation tiers:
 | **Cortex-A53 x4** | N/A | N/A | ARM Generic PPIs | **Custom Wiring** | Pinned to AArch32 mode (`aarch64=false`). CPU 0 boots directly; SMP secondary cores use holding pen mailbox at `0x504`. |
 | **GIC-400 (GICv2)** | `0x18081000` (GICD)<br>`0x18082000` (GICC) | 4 KB<br>8 KB | N/A | **Upstream QEMU** | Upstream `TYPE_ARM_GIC`, 256 physical INTIDs, verified via `GICD_TYPER=0x67`. |
 | **16550A UART0** | `0x18062300` | 32 B | SPI 25 (INTID 57) | **Upstream QEMU** | Upstream `serial_mm_init` with 4-byte register stride (`shift=2`), clocked at 27 MHz (`baudbase=1687500`). |
-| **Timers TC0..TC7** | `0x1801B600` | 512 B | SPI 2 (INTID 34) | **Custom Model** | `hw/arm/rtd2841_timer.c`: 8 independent 27 MHz monotonic up-counters (`limit - count` returned to CVR), periodic rearming, ptimer backend. |
-| **eMMC / SDHCI** | `0x18010800` | 1 KB | SPI 18 (INTID 50) | **Upstream QEMU** | Upstream `TYPE_SYSBUS_SDHCI`. Mounts raw partition images via `-drive file=...,format=raw,if=sd`. |
-| **Ethernet MAC** | `0x18016000` | 4 KB | SPI 20 (INTID 52) | **Custom Model** | `rtd2841_eth` in `rtd2841.c`: RTL8168GU MAC version (`0x50900800`), DMA ring buffers, SLIRP NAT integration. |
+| **Timers TC0..TC7** | `0x1801B600` | 512 B | SPI 2 (INTID 34) | **Custom Model** | **Fully Verified**: `hw/arm/rtd2841_timer.c`: 8 independent 27 MHz monotonic up-counters (`limit - count` returned to CVR), periodic rearming, ptimer backend. Monotonic up-count verified + GIC INTID 34 hardware CPU IRQ trap verified. |
+| **eMMC / SDHCI** | `0x18010800` | 1 KB | SPI 18 (INTID 50) | **Upstream QEMU** | **Verified**: Upstream `TYPE_SYSBUS_SDHCI`. MMIO capabilities, card insertion detection `PRSNT_ST` (`0x01FF0000`), and ext4 filesystem mount under Linux (`-drive file=...,format=raw,if=sd`). |
+| **Ethernet MAC** | `0x18016000` | 4 KB | SPI 20 (INTID 52) | **Custom Model** | **Fully Verified**: `rtd2841_eth` in `rtd2841.c`: RTL8168GU MAC version (`0x50900800`), DMA ring buffers, SLIRP NAT integration. Bare-metal packet TX/RX with SLIRP backend verified in CI + Linux 4.4 kernel driver driver-up/ping/dns/http verified locally. |
 | **Framebuffer** | `0x3E000000` | 8 MB | N/A | **Upstream Overlay** | 1920x1080@32bpp ARGB8888 RAM carveout. Compatible with Linux `simple-framebuffer`. |
 | **Watchdog** | `0x18062200` | 256 B | SPI 0 (INTID 32) | **Register Stub** | Read/write register scaffold (`WDOG_TCWCR`, `WDOG_TCWTR`) to prevent kernel watchdog driver reboot loops. |
 | **TMU (Thermal)** | `0x18000000` | 1 KB | N/A | **Unimplemented** | Returns 0. Kernel thermal driver logs warning but boot continues. Safe for diagnostic and Linux boot paths. |
@@ -29,6 +29,38 @@ Platform peripherals are categorized into four implementation tiers:
 | **IR Remote Decoder** | `0x18061400` | 256 B | SPI 25 (INTID 57) | **Unimplemented** | Returns 0. Hardware IR receiver peripheral not implemented. |
 | **ARM TSG** | `0x1805C800` | 256 B | N/A | **Unimplemented** | Returns 0. Time-stamping generator registers return 0 safely. |
 | **SCU Control** | `0x18080000` | 4 KB | N/A | **Unimplemented** | Returns 0. CPU SMP coherency managed directly in software. |
+
+---
+
+## Verification Architecture & Testing Tiers
+
+To provide transparent validation boundaries for continuous integration and external auditors, platform emulation is evaluated against a strict three-tier verification harness:
+
+### Tier 1: Automated Headless CI Bare-Metal Silicon Suite
+- **Runtime**: < 10 seconds execution in standard GitHub Actions headless runners (`ubuntu-latest`).
+- **Dependencies**: Zero proprietary blobs. Pure open-source bare-metal assembly test suite compiled directly from source (`tests/firmware_test.s`).
+- **Assertions**:
+  - Cortex-A53 CPU core initialization in AArch32 mode.
+  - GIC-400 distributor register accessibility and 256 INTID capacity (`GICD_TYPER = 0x00000067`).
+  - Realtek TC0 27 MHz monotonic timer active up-count and CPU IRQ trap delivery (`INTID 34`).
+  - SDHCI eMMC host controller MMIO capabilities verification (`CAPAREG != 0`).
+  - RTL8168GU Gigabit Ethernet MAC hardware initialization and bidirectional bare-metal packet TX/RX exchange via QEMU SLIRP user-networking backend.
+
+### Tier 2: Storage Media Insertion Suite
+- **Runtime**: Automated CI sub-suite with synthetic storage media attached.
+- **Dependencies**: Ephemeral synthetic raw disk image generated during test invocation.
+- **Assertions**:
+  - Validates SDHCI present state register (`PRSNT_ST = 0x01FF0000`) indicating card insertion, card state stable, card detect asserted, and DAT/CMD line levels high.
+  - Validates controller block readiness without bus stalls.
+
+### Tier 3: Full-System Linux 4.4 & Userspace Bring-Up
+- **Runtime**: Developer workstations and self-hosted CI runner environments with vendor firmware.
+- **Dependencies**: Realtek Linux 4.4.3 kernel (`zImage`) and vendor dual-partition eMMC disk image (`staging/emmc.raw` / `storage.img`).
+- **Assertions**:
+  - Multi-core SMP bring-up and holding pen jump mailbox execution.
+  - Mounting dual ext4 partitions (`/system` and `/vendor`) via checked userspace syscalls.
+  - Framebuffer display refresh with interactive UI controls.
+  - Live outbound network stack verification: driver-up, default gateway ICMP ping (`10.0.2.2`), public DNS resolution (`8.8.8.8 -> google.com`), and HTTP data exchange (`google.com:80`).
 
 ---
 
