@@ -22,9 +22,11 @@ except Exception:
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def find_qemu():
-    if "QEMU_BIN" in os.environ and os.path.isfile(os.environ["QEMU_BIN"]):
+    if "QEMU_BIN" in os.environ and os.path.isfile(os.environ["QEMU_BIN"]) and os.access(os.environ["QEMU_BIN"], os.X_OK):
         return os.environ["QEMU_BIN"]
     cands = [
+        "/Users/basilthampy/.gemini/antigravity/scratch/tcl-firmware-re/qemu/build/qemu-system-aarch64",
+        os.path.expanduser("~/.gemini/antigravity/scratch/tcl-firmware-re/qemu/build/qemu-system-aarch64"),
         os.path.join(REPO_ROOT, "qemu-upstream/build/qemu-system-aarch64"),
         os.path.join(REPO_ROOT, "qemu/build/qemu-system-aarch64"),
         os.path.join(REPO_ROOT, "../tcl-firmware-re/qemu/build/qemu-system-aarch64"),
@@ -88,7 +90,7 @@ def safe_print(s):
     except (BlockingIOError, OSError):
         pass
 
-def run_test(name, extra_args, pass_marker, kernel_bin=None, timeout_sec=10.0):
+def run_test(name, extra_args, pass_markers, kernel_bin=None, timeout_sec=10.0):
     global current_proc
     qemu_bin = find_qemu()
     if not qemu_bin:
@@ -129,6 +131,12 @@ def run_test(name, extra_args, pass_marker, kernel_bin=None, timeout_sec=10.0):
     sel = selectors.DefaultSelector()
     sel.register(proc.stdout, selectors.EVENT_READ)
 
+    if isinstance(pass_markers, (list, tuple)):
+        required_markers = list(pass_markers)
+    else:
+        required_markers = [pass_markers]
+    remaining_markers = list(required_markers)
+
     passed = False
     start_time = time.time()
     line_buf = ""
@@ -164,7 +172,10 @@ def run_test(name, extra_args, pass_marker, kernel_bin=None, timeout_sec=10.0):
                     full_line = line + "\n"
                     output_lines.append(full_line)
                     safe_print(full_line)
-                    if pass_marker in full_line:
+                    to_remove = [m for m in remaining_markers if m in full_line]
+                    for m in to_remove:
+                        remaining_markers.remove(m)
+                    if not remaining_markers:
                         passed = True
                         break
                 if passed:
@@ -189,14 +200,19 @@ def run_test(name, extra_args, pass_marker, kernel_bin=None, timeout_sec=10.0):
             full_line = line + "\n"
             output_lines.append(full_line)
             safe_print(full_line)
-            if pass_marker in full_line:
-                passed = True
+            to_remove = [m for m in remaining_markers if m in full_line]
+            for m in to_remove:
+                remaining_markers.remove(m)
 
         if line_buf:
             output_lines.append(line_buf + "\n")
             safe_print(line_buf + "\n")
-            if pass_marker in line_buf:
-                passed = True
+            to_remove = [m for m in remaining_markers if m in line_buf]
+            for m in to_remove:
+                remaining_markers.remove(m)
+
+        if not remaining_markers:
+            passed = True
 
     finally:
         try:
@@ -223,30 +239,42 @@ def run_test(name, extra_args, pass_marker, kernel_bin=None, timeout_sec=10.0):
         print(f"[+] CI TEST PASSED: {name}\n")
         return True
     else:
-        print(f"[-] CI TEST FAILED: {name} (marker '{pass_marker}' not found)\n", file=sys.stderr)
+        missing = [m for m in required_markers if m in remaining_markers]
+        print(f"[-] CI TEST FAILED: {name} (missing markers: {missing})\n", file=sys.stderr)
         return False
 
 def main():
     success = True
 
-    # Test 1: Core SoC Diagnostic Suite without storage attached
+    # Test 1: Tier 1 - Core SoC Diagnostics (Bare-metal silicon verification with SLIRP)
+    t1_markers = [
+        "Active up-count verified",
+        "Hardware IRQ trap (INTID 34) delivered and acknowledged",
+        "Packet TX/RX verified via SLIRP backend",
+        "ALL HARDWARE SUBSYSTEM VERIFICATION TESTS PASSED",
+    ]
     t1 = run_test(
-        "Core SoC Diagnostics (CPU, GIC, TC0, SDHCI controller MMIO)",
-        [],
-        "ALL HARDWARE SUBSYSTEM VERIFICATION TESTS PASSED"
+        "Tier 1: Core SoC Diagnostics (CPU, GIC, TC0 IRQ, SDHCI, RTL8168 SLIRP)",
+        ["-nic", "user,model=rtd2841-eth"],
+        t1_markers,
     )
     if not t1:
         success = False
 
-    # Test 2: Storage Media Detection with virtual drive attached
+    # Test 2: Tier 2 - SDHCI eMMC Storage Media Insertion Test with virtual drive attached
     dummy_img = os.path.join(REPO_ROOT, "tests/ci_storage_test.raw")
     try:
         with open(dummy_img, "wb") as f:
             f.write(b"\x00" * (1024 * 1024 * 16)) # 16 MB dummy raw disk
+        t2_markers = [
+            "media present",
+            "PRSNT_ST=0x01FF0000",
+            "ALL HARDWARE SUBSYSTEM VERIFICATION TESTS PASSED",
+        ]
         t2 = run_test(
-            "SDHCI eMMC Storage Media Insertion Test",
-            ["-drive", f"file={dummy_img},format=raw,if=sd"],
-            "media present"
+            "Tier 2: SDHCI eMMC Storage Media Insertion Test",
+            ["-drive", f"file={dummy_img},format=raw,if=sd", "-nic", "user,model=rtd2841-eth"],
+            t2_markers,
         )
         if not t2:
             success = False
@@ -254,12 +282,12 @@ def main():
         if os.path.isfile(dummy_img):
             os.remove(dummy_img)
 
-    # Test 3: Linux Kernel Boot with RTL8168GU Network Subsystem & Live Outbound Connectivity
+    # Test 3: Tier 3 - Linux Kernel Boot with RTL8168GU Network Subsystem & Live Outbound Connectivity
     kernel_img = find_kernel()
     storage_img = find_storage()
     if kernel_img and storage_img:
         t3 = run_test(
-            "Linux Kernel Boot with RTL8168GU Network Subsystem & Live Outbound Connectivity",
+            "Tier 3: Full-System Linux 4.4 Kernel Boot & Live Outbound Network Connectivity",
             [
                 "-drive", f"file={storage_img},format=raw,if=sd",
                 "-append", "console=tty0 console=ttyS0,115200 earlyprintk root=/dev/mmcblk0p1 rw init=/init androidboot.selinux=permissive",

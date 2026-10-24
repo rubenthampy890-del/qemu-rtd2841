@@ -7,7 +7,17 @@ QEMU machine model and system emulator for the Realtek RTD2841 / RTK284x SoC (TC
 
 Used in commercial Android Smart TVs (TCL, Xiaomi, Hisense, etc.). This model enables developers and security researchers to run bare-metal diagnostics, reverse-engineer peripherals, and boot Linux kernels without risking physical hardware or requiring board rework.
 
-> **Project Scope & Verification Boundary**: This repository implements a QEMU machine model for RTD2841/RTK284x platform emulation. Automated CI tests establish bare-metal hardware diagnostics (AArch32 CPU, GICv2, 27 MHz monotonic timers, SDHCI, and RTL8168 Ethernet), eMMC storage media insertion, and Linux 4.4 kernel boot with ext4 rootfs and live outbound network connectivity (see [HARDWARE_FIDELITY.md](HARDWARE_FIDELITY.md)).
+> **Project Scope & Verification Boundary**: This repository implements a QEMU machine model for RTD2841/RTK284x platform emulation. Verification is organized into 3 transparent testing tiers: Tier 1 Bare-Metal Silicon Suite (AArch32 CPU, GICv2, TC0 timer with monotonic up-count and INTID 34 IRQ trap, SDHCI capabilities, and RTL8168 bare-metal packet TX/RX via SLIRP), Tier 2 Storage Media Insertion Suite (card insertion detection `PRSNT_ST = 0x01FF0000`), and Tier 3 Full-System Linux 4.4 & Userspace Bring-Up (dual ext4 rootfs, simple-framebuffer, live outbound network ping/dns/http) (see [HARDWARE_FIDELITY.md](HARDWARE_FIDELITY.md)).
+
+---
+
+## Verification Architecture & Testing Tiers
+
+Platform emulation is evaluated across three strictly defined testing tiers to establish clear verification boundaries:
+
+- **Tier 1: Automated Headless CI Bare-Metal Silicon Suite**: Runs in <10s on GitHub Actions (`ubuntu-latest`) with zero proprietary blobs. Verifies Cortex-A53 in AArch32 mode, GICv2 distributor (256 INTIDs), Realtek TC0 27 MHz monotonic timer up-count & CPU INTID 34 IRQ trap delivery, SDHCI controller MMIO capabilities, and RTL8168GU Ethernet bare-metal packet TX/RX exchange via QEMU SLIRP.
+- **Tier 2: Storage Media Insertion Suite**: Verifies SDHCI controller with synthetic drive attached (`-drive file=...,format=raw,if=sd`), asserting media presence and block ready status (`PRSNT_ST = 0x01FF0000`).
+- **Tier 3: Full-System Linux 4.4 & Userspace Bring-Up**: Runs on developer benches and self-hosted CI with vendor firmware. Verifies SMP boot, dual ext4 filesystem mount (`/system`, `/vendor`), simple-framebuffer console, and live outbound network connectivity (ICMP ping, DNS resolution, HTTP fetch).
 
 ---
 
@@ -51,10 +61,10 @@ Target: Realtek RTD2841 / TCL RT41 Chassis (tv030)
 - **Cortex-A53 quad-core**: Pinned to AArch32 mode (`aarch64=false`) to match Realtek's 32-bit TV firmware stack. Core 0 boots directly; cores 1-3 start powered off and wait for PSCI `CPU_ON` or jump mailbox at `0x504`.
 - **GIC-400 (GICv2)**: Distributor at `0x18081000`, CPU interface at `0x18082000`, 256 IRQs.
 - **16550A UART0**: Base `0x18062300`, 4-byte register stride (`shift = 2`), 27 MHz clock. Mapped to stdio.
-- **Hardware Timers**: 8 independent 27 MHz monotonic up-counters (`TC0`..`TC7`) at `0x1801B600` (reporting `limit - count` to CVR registers) with periodic reload, matching Realtek Linux `sched_clock` and routed to GIC INTID 34.
+- **Hardware Timers**: **Fully Verified** — 8 independent 27 MHz monotonic up-counters (`TC0`..`TC7`) at `0x1801B600` (reporting `limit - count` to CVR registers) with periodic reload, matching Realtek Linux `sched_clock`. Verified via active monotonic up-count assertion and GIC INTID 34 hardware CPU IRQ trap delivery.
 - **Watchdog**: Stub at `0x18062200` to keep vendor driver probes from hanging.
-- **eMMC / SDHCI**: QEMU SysBus SDHCI controller at `0x18010800` (SPI 18 / INTID 50) for disk image mounting (`-drive file=...,if=sd`).
-- **Gigabit Ethernet**: RTL8168GU MAC at `0x18016000` (SPI 20 / INTID 52) with DMA rings, link state emulation, and QEMU SLIRP user networking (`-nic user,model=rtd2841-eth`).
+- **eMMC / SDHCI**: **Verified** — QEMU SysBus SDHCI controller at `0x18010800` (SPI 18 / INTID 50). Verified via MMIO capabilities, card insertion detection (`PRSNT_ST = 0x01FF0000`), and ext4 filesystem mount under Linux (`-drive file=...,if=sd`).
+- **Gigabit Ethernet**: **Fully Verified** — RTL8168GU MAC at `0x18016000` (SPI 20 / INTID 52) with DMA rings, link state emulation, and QEMU SLIRP user networking (`-nic user,model=rtd2841-eth`). Verified via bare-metal packet TX/RX exchange with SLIRP backend in CI and Linux 4.4 kernel driver-up/ping/dns/http locally.
 - **Framebuffer**: Simple framebuffer at `0x3E000000` (8 MB DRAM carveout at 992 MB offset, 1920x1080 @ 32bpp ARGB8888). Compatible with Linux `simple-framebuffer`.
 - **RBUS Window**: 4 MB peripheral catch-all (`0x18000000` - `0x18400000`) so unmodeled register reads return 0 instead of taking bus aborts.
 
