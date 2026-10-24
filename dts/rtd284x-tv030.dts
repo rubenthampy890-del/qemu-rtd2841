@@ -44,7 +44,7 @@
 
 	cpus {
 		#address-cells = <1>;
-		#size-cells = <1>;
+		#size-cells = <0>;
 
 		cpu-map {
 			cluster0: cluster0 {
@@ -188,7 +188,7 @@
 		clock-frequency = <27000000>;
 	};
 
-	gic:interrupt-controller@0x18081000 {
+	gic: interrupt-controller@18081000 {
 		compatible = "realtek,cortex-a9-gic";
 		#interrupt-cells = <3>;
 		interrupt-controller;
@@ -202,7 +202,7 @@
 		interrupts = <0 25 4>;
 	};
 
-	gpu@0x18040000 {
+	gpu@18040000 {
 		compatible = "arm,malit6xx", "arm,mali-midgard";
 		reg = <0x18040000 0x4000>;
 		interrupts = <0 26>, <0 27>, <0 14>;
@@ -215,14 +215,14 @@
        clocks {
                compatible = "arm,rtk-clks";
 
-                rtk_dvfs: rtk_clocks@0 {
+                rtk_dvfs: rtk-clocks-dvfs {
                         compatible = "arm,rtk-clk-indexed";
                         #clock-cells = <1>;
                         clock-indices = <0>, <1>;
                         clock-output-names = "vbig", "vlittle";
                 };
 
-                rtk_clk: rtk_clocks@2 {
+                rtk_clk: rtk-clocks-range {
                         compatible = "arm,rtk-clk-range";
                         #clock-cells = <1>;
                         clock-indices = <2>, <3>;
@@ -235,19 +235,19 @@
                 compatible = "arm,rtk-cpufreq";
         };
 
-	thermal@0x18000000 {
+	thermal@18000000 {
         	compatible = "rtk_rtk299s-tmu";
         	reg = <0x18000000 0x200
         	       0x18000200 0x200>;
         	status = "okay";
         };
 
-        rtk_monitor@0x18000000 {
+        rtk_monitor {
                 compatible = "rtk_monitor";
                 status = "okay";
         };
 
-	emmc@0x18010800 {
+	emmc@18010800 {
 		compatible = "generic-sdhci", "realtek,rtd2841-sdhci", "realtek,rtk-emmc";
 		reg = <0x18010800 0x400>;
 		interrupts = <0 18 4>;
@@ -256,7 +256,7 @@
 		status = "okay";
 	};
 
-	sdio@0x18010c00 {
+	sdio@18010c00 {
 		compatible = "realtek,rtk-sdio";
 		reg = <0x18010c00 0x400>;
 		interrupts = <0 18 4>;
