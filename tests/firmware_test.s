@@ -50,6 +50,15 @@ reset_handler:
     mov r2, #0
     str r2, [r1]
 
+    /* Disable all GIC distributor SPI interrupts (INTID 32..255) */
+    ldr r2, =0x18081184       /* GICD_ICENABLER1 */
+    ldr r3, =0xFFFFFFFF
+    mov r4, #7                /* 7 registers: INTID 32..255 */
+disable_all_irqs:
+    str r3, [r2], #4
+    subs r4, r4, #1
+    bne disable_all_irqs
+
     ldr r0, =0x18062300         /* UART0 MMIO base */
 
     /* 1. Banner */
@@ -209,7 +218,9 @@ msg_timer_fail:
     ldr r4, =0x1801B600
     mov r5, #0
     str r5, [r4, #0x40]       /* Stop TC0 first: ensures new_en (0->1) restarts counter */
-    ldr r5, =0x00000200       /* 512 ticks = 18 microseconds! */
+    ldr r5, =0xFF
+    str r5, [r4, #0xEC]       /* Clear pending timer ISR status (W1C) */
+    ldr r5, =0x00000400       /* 1024 ticks = 37 microseconds */
     str r5, [r4, #0x00]
 
     /* 8. Clear TC0CVR (0x20) */
@@ -229,12 +240,11 @@ msg_timer_fail:
 
     /* 12. Bounded wait loop for irq_counter > 0 */
     ldr r3, =irq_counter
-    mov r8, #50
+    ldr r8, =5000000
 wait_timer_irq:
     ldr r4, [r3]
     cmp r4, #0
     bne irq_test_pass
-    wfi
     subs r8, r8, #1
     bne wait_timer_irq
 
@@ -531,8 +541,24 @@ irq_handler:
     and r2, r1, r2              /* Mask INTID bits [9:0] */
 
     cmp r2, #34                 /* INTID 34: TC0 Timer */
-    bne irq_ack
+    beq timer_irq_hit
 
+    /* Unexpected interrupt: disable it in GICD_ICENABLER so it cannot storm */
+    cmp r2, #1020
+    bge irq_ack                 /* Spurious interrupt (1020..1023) */
+    push {r3, r4, r5}
+    ldr r3, =0x18081180
+    lsr r4, r2, #5              /* INTID / 32 */
+    lsl r4, r4, #2
+    add r3, r3, r4
+    and r4, r2, #0x1F           /* INTID % 32 */
+    mov r5, #1
+    lsl r5, r5, r4
+    str r5, [r3]                /* Clear-enable in GICD */
+    pop {r3, r4, r5}
+    b irq_ack
+
+timer_irq_hit:
     /* Increment irq_counter in memory */
     ldr r3, =irq_counter
     ldr r4, [r3]
