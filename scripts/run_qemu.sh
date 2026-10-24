@@ -52,7 +52,9 @@ fi
 # Target execution payload (defaults to live kernel if available, else firmware_test.bin)
 IMAGE="${1:-}"
 if [ -z "${IMAGE}" ]; then
-    if [ -f "${REPO_ROOT}/../tcl-firmware-re/output/kernel/zImage" ]; then
+    if [ -f "${REPO_ROOT}/output/kernel/zImage" ]; then
+        IMAGE="${REPO_ROOT}/output/kernel/zImage"
+    elif [ -f "${REPO_ROOT}/../tcl-firmware-re/output/kernel/zImage" ]; then
         IMAGE="${REPO_ROOT}/../tcl-firmware-re/output/kernel/zImage"
     else
         IMAGE="${REPO_ROOT}/tests/firmware_test.bin"
@@ -124,7 +126,7 @@ if [ -n "${IMAGE}" ] && [ -f "${IMAGE}" ]; then
         echo "[+] Booting kernel image via -kernel: ${IMAGE}"
         QEMU_ARGS+=(
             -kernel "${IMAGE}"
-            -append "console=tty0 console=ttyS0,115200 earlyprintk root=/dev/mmcblk0p1 rootfstype=ext4 rw rootwait init=/init androidboot.selinux=permissive"
+            -append "console=tty0 console=ttyS0,115200 earlyprintk root=/dev/mmcblk0p1 rootfstype=ext4 rw rootwait init=/init androidboot.selinux=permissive consoleblank=0"
         )
     elif [[ "${filename}" == *.bin || "${filename}" == *.elf ]]; then
         echo "[+] Loading bare-metal test binary via -kernel: ${IMAGE}"
@@ -133,7 +135,7 @@ if [ -n "${IMAGE}" ] && [ -f "${IMAGE}" ]; then
         echo "[+] Booting kernel image via -kernel: ${IMAGE}"
         QEMU_ARGS+=(
             -kernel "${IMAGE}"
-            -append "console=tty0 console=ttyS0,115200 earlyprintk root=/dev/mmcblk0p1 rootfstype=ext4 rw rootwait init=/init androidboot.selinux=permissive"
+            -append "console=tty0 console=ttyS0,115200 earlyprintk root=/dev/mmcblk0p1 rootfstype=ext4 rw rootwait init=/init androidboot.selinux=permissive consoleblank=0"
         )
     fi
 else

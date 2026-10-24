@@ -168,7 +168,7 @@
 	gpu@18040000 {
 		compatible = "arm,malit6xx", "arm,mali-midgard";
 		reg = <0x18040000 0x4000>;
-		interrupts = <0 26>, <0 27>, <0 14>;
+		interrupts = <0 26 4>, <0 27 4>, <0 14 4>;
 		interrupt-names = "JOB", "MMU", "GPU";
 
 		//clocks = <&pclk_mali>;
