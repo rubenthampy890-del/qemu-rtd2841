@@ -63,7 +63,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(RTD2841EthState, RTD2841_ETH)
 #define RTD2841_ETH_SIZE            0x00001000ULL           /* 4 KB */
 #define RTD2841_ETH_SPI             20                      /* SPI 20 */
 #define RTD2841_ETH_IRQ             (32 + RTD2841_ETH_SPI)  /* GIC INTID 52 */
-#define RTD2841_ETH_NUM_DESC        256                     /* Ring limit */
+#define RTD2841_ETH_NUM_TX_DESC     64                      /* Realtek driver allocates 64 Tx descs */
+#define RTD2841_ETH_NUM_RX_DESC     256                     /* Realtek driver allocates 256 Rx descs */
+#define RTD2841_ETH_NUM_DESC        RTD2841_ETH_NUM_RX_DESC /* Legacy ring limit */
 
 /* Realtek RBUS Peripheral MMIO Apertures & Stubs */
 #define RTD2841_RBUS_BASE           0x18000000ULL

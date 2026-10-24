@@ -99,6 +99,7 @@ struct RTD2841TimerState {
     uint32_t cr[RTD2841_TIMER_N];    /* control (tc_en/tc_mode/tc_pause)   */
     uint32_t icr[RTD2841_TIMER_N];   /* interrupt ctrl (tc_ie)             */
     uint32_t isr;                    /* raw timer expiry flags, TC0->bit0  */
+    bool oneshot_pending[RTD2841_TIMER_N];
 };
 
 static bool rtd2841_running(RTD2841TimerState *s, int id)
@@ -138,16 +139,31 @@ static void rtd2841_timer_update_irq(RTD2841TimerState *s)
 static void rtd2841_timer_expire(void *opaque)
 {
     Rtd2841TimerCb *c = opaque;
-    ptimer_state *t = c->parent->timer[c->id];
-    uint64_t limit = ptimer_get_limit(t);
+    RTD2841TimerState *s = c->parent;
+    int id = c->id;
+    ptimer_state *t = s->timer[id];
 
-    if (limit > 0xFFFFFFFFULL) {
-        ptimer_transaction_begin(t);
-        ptimer_set_limit(t, limit & 0xFFFFFFFFULL, 0);
-        ptimer_transaction_commit(t);
+    if (s->cr[id] & R_CR_PERIOD) {
+        s->isr |= (1u << id);
+        rtd2841_timer_update_irq(s);
+    } else {
+        if (s->oneshot_pending[id]) {
+            s->oneshot_pending[id] = false;
+            s->isr |= (1u << id);
+            rtd2841_timer_update_irq(s);
+        }
+        /*
+         * One-shot timer expired: in hardware, CVR does not freeze.
+         * The counter continues counting up monotonically (modulo 2^32).
+         * Keep ptimer running with 32-bit rollover so CVR advances.
+         * Note: Callback is already inside an active transaction.
+         */
+        uint64_t limit = ptimer_get_limit(t);
+        uint32_t cur_val = (uint32_t)limit;
+        ptimer_set_limit(t, 0xFFFFFFFFULL, 0);
+        ptimer_set_count(t, 0xFFFFFFFFULL - cur_val);
+        ptimer_run(t, 0);
     }
-    c->parent->isr |= (1u << c->id);
-    rtd2841_timer_update_irq(c->parent);
 }
 
 /* Start the hardware counter: preload CVR from TVR, then run.
@@ -171,6 +187,7 @@ static void rtd2841_timer_start(RTD2841TimerState *s, int id,
             ptimer_set_count(t, count ? count : 0xFFFFFFFF);
         }
     }
+    s->oneshot_pending[id] = !periodic;
     ptimer_run(t, periodic ? 0 : 1);
     ptimer_transaction_commit(t);
 }
@@ -195,7 +212,7 @@ static uint64_t rtd2841_timer_read(void *opaque, hwaddr addr, unsigned size)
         id = (addr - R_CVR0) / 4;
         limit = ptimer_get_limit(s->timer[id]);
         count = ptimer_get_count(s->timer[id]);
-        return (limit >= count) ? (uint32_t)(limit - count) : 0;
+        return (uint32_t)(limit - count);
     } else if (addr < 0x60) {               /* TIMER_TCxCR */
         id = (addr - R_CR0) / 4;
         return s->cr[id];
@@ -232,28 +249,33 @@ static void rtd2841_timer_write(void *opaque, hwaddr addr, uint64_t val,
         {
             ptimer_state *t = s->timer[id];
             if (rtd2841_running(s, id)) {
-                uint64_t limit = ptimer_get_limit(t);
-                uint64_t count = ptimer_get_count(t);
-                uint64_t cur = (limit >= count) ? (limit - count) : 0;
-                uint64_t next;
-                uint64_t new_limit = val ? val : 0xFFFFFFFFULL;
-                if (val > cur) {
-                    next = val - cur;
-                } else if (val < cur) {
-                    new_limit = 0x100000000ULL + val;
-                    next = new_limit - cur;
+                if (s->cr[id] & R_CR_PERIOD) {
+                    uint32_t period = val ? val : 0xFFFFFFFF;
+                    ptimer_transaction_begin(t);
+                    ptimer_set_limit(t, period, 1);
+                    ptimer_set_count(t, period);
+                    ptimer_run(t, 0);
+                    ptimer_transaction_commit(t);
                 } else {
-                    next = 1;
-                }
-                if (next == 0) {
-                    next = 1;
-                }
+                    uint64_t limit = ptimer_get_limit(t);
+                    uint64_t count = ptimer_get_count(t);
+                    uint32_t cur = (uint32_t)(limit - count);
+                    uint32_t next = (uint32_t)(val - cur);
+                    uint64_t new_limit;
 
-                ptimer_transaction_begin(t);
-                ptimer_set_limit(t, new_limit, 0);
-                ptimer_set_count(t, next);
-                ptimer_run(t, (s->cr[id] & R_CR_PERIOD) ? 0 : 1);
-                ptimer_transaction_commit(t);
+                    if (next == 0) {
+                        next = 1;
+                    }
+                    new_limit = (uint64_t)cur + next;
+
+                    s->oneshot_pending[id] = true;
+
+                    ptimer_transaction_begin(t);
+                    ptimer_set_limit(t, new_limit, 0);
+                    ptimer_set_count(t, next);
+                    ptimer_run(t, 1);
+                    ptimer_transaction_commit(t);
+                }
             } else {
                 ptimer_transaction_begin(t);
                 ptimer_set_limit(t, val ? val : 0xFFFFFFFFULL, 0);
@@ -266,17 +288,14 @@ static void rtd2841_timer_write(void *opaque, hwaddr addr, uint64_t val,
         uint64_t limit;
         id = (addr - R_CVR0) / 4;
         t = s->timer[id];
-        limit = ptimer_get_limit(t);
+        limit = (s->cr[id] & R_CR_PERIOD) ? (s->tvr[id] ? s->tvr[id] : 0xFFFFFFFFULL) : 0xFFFFFFFFULL;
         ptimer_transaction_begin(t);
-        if (limit == 0) {
-            limit = s->tvr[id] ? s->tvr[id] : 0xFFFFFFFFULL;
-            ptimer_set_limit(t, limit, 0);
+        ptimer_set_limit(t, limit, 0);
+        if (limit >= (uint32_t)val) {
+            ptimer_set_count(t, limit - (uint32_t)val);
+        } else {
+            ptimer_set_count(t, 0);
         }
-        if (limit < val) {
-            limit = val;
-            ptimer_set_limit(t, limit, 0);
-        }
-        ptimer_set_count(t, limit - val);
         ptimer_transaction_commit(t);
         return;
     } else if (addr < 0x60) {               /* TIMER_TCxCR */
@@ -344,6 +363,7 @@ static void rtd2841_timer_reset(DeviceState *dev)
         s->tvr[i] = 0;
         s->cr[i] = 0;
         s->icr[i] = 0;
+        s->oneshot_pending[i] = false;
     }
     s->isr = 0;
     rtd2841_timer_update_irq(s);

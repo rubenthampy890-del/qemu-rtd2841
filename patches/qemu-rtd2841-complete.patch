@@ -31,10 +31,10 @@ index bcc068d..ed08c03 100644
  arm_common_ss.add(when: 'CONFIG_XLNX_ZYNQMP_ARM', if_true: files('xlnx-zynqmp.c', 'xlnx-zcu102.c'))
 diff --git a/hw/arm/rtd2841.c b/hw/arm/rtd2841.c
 new file mode 100644
-index 0000000..34c4527
+index 0000000..5344a27
 --- /dev/null
 +++ b/hw/arm/rtd2841.c
-@@ -0,0 +1,1039 @@
+@@ -0,0 +1,1047 @@
 +/*
 + * Realtek RTD2841 SoC & TCL Smart TV Board Model (tv030)
 + *
@@ -116,7 +116,7 @@ index 0000000..34c4527
 +{
 +    uint8_t pkt_buf[4096];
 +    size_t pkt_len = 0;
-+    int max_desc = RTD2841_ETH_NUM_DESC;
++    int max_desc = RTD2841_ETH_NUM_TX_DESC;
 +    bool sent_any = false;
 +
 +    if (!(s->chipcmd & 0x04) || !s->tx_desc_base) {
@@ -129,7 +129,7 @@ index 0000000..34c4527
 +        uint64_t dma_addr;
 +        uint32_t frag_len;
 +
-+        s->cur_tx %= RTD2841_ETH_NUM_DESC;
++        s->cur_tx %= RTD2841_ETH_NUM_TX_DESC;
 +        desc_addr = s->tx_desc_base + (s->cur_tx * 16);
 +
 +        address_space_read(&address_space_memory, desc_addr,
@@ -143,6 +143,10 @@ index 0000000..34c4527
 +        address_space_read(&address_space_memory, desc_addr + 8,
 +                           MEMTXATTRS_UNSPECIFIED, &dma_addr, 8);
 +        dma_addr = le64_to_cpu(dma_addr);
++
++        if (dma_addr == 0 || dma_addr >= RTD2841_RAM_SIZE) {
++            break;
++        }
 +
 +        frag_len = opts1 & RTK_DESC_LEN_MASK;
 +        if (opts1 & RTK_DESC_FS) {
@@ -172,7 +176,7 @@ index 0000000..34c4527
 +        if (opts1 & RTK_DESC_EOR) {
 +            s->cur_tx = 0;
 +        } else {
-+            s->cur_tx = (s->cur_tx + 1) % RTD2841_ETH_NUM_DESC;
++            s->cur_tx = (s->cur_tx + 1) % RTD2841_ETH_NUM_TX_DESC;
 +        }
 +    }
 +
@@ -192,7 +196,7 @@ index 0000000..34c4527
 +        return false;
 +    }
 +
-+    s->cur_rx %= RTD2841_ETH_NUM_DESC;
++    s->cur_rx %= RTD2841_ETH_NUM_RX_DESC;
 +    desc_addr = s->rx_desc_base + (s->cur_rx * 16);
 +    address_space_read(&address_space_memory, desc_addr,
 +                       MEMTXATTRS_UNSPECIFIED, &opts1, 4);
@@ -219,7 +223,7 @@ index 0000000..34c4527
 +        return 0;
 +    }
 +
-+    s->cur_rx %= RTD2841_ETH_NUM_DESC;
++    s->cur_rx %= RTD2841_ETH_NUM_RX_DESC;
 +    desc_addr = s->rx_desc_base + (s->cur_rx * 16);
 +    address_space_read(&address_space_memory, desc_addr,
 +                       MEMTXATTRS_UNSPECIFIED, &opts1, 4);
@@ -247,6 +251,10 @@ index 0000000..34c4527
 +                       MEMTXATTRS_UNSPECIFIED, &dma_addr, 8);
 +    dma_addr = le64_to_cpu(dma_addr);
 +
++    if (dma_addr == 0 || dma_addr >= RTD2841_RAM_SIZE) {
++        return 0;
++    }
++
 +    address_space_write(&address_space_memory, dma_addr,
 +                        MEMTXATTRS_UNSPECIFIED, buf, size);
 +
@@ -264,7 +272,7 @@ index 0000000..34c4527
 +    if (eor) {
 +        s->cur_rx = 0;
 +    } else {
-+        s->cur_rx = (s->cur_rx + 1) % RTD2841_ETH_NUM_DESC;
++        s->cur_rx = (s->cur_rx + 1) % RTD2841_ETH_NUM_RX_DESC;
 +    }
 +
 +    s->intr_status |= 0x0001; /* RxOK */
@@ -986,9 +994,9 @@ index 0000000..34c4527
 +                                        RTD2841_RAM_BASE,
 +                                        machine->ram, -1);
 +
-+    /* Framebuffer carveout @ 0x3E000000 (8MB) */
-+    memory_region_init_ram(&ms->fb_ram, NULL, "rtd2841.fb",
-+                           RTD2841_FB_SIZE, &error_fatal);
++    /* Framebuffer carveout alias @ 0x3E000000 (8MB into machine->ram) */
++    memory_region_init_alias(&ms->fb_ram, OBJECT(machine), "rtd2841.fb",
++                             machine->ram, RTD2841_FB_BASE, RTD2841_FB_SIZE);
 +    memory_region_add_subregion_overlap(get_system_memory(),
 +                                        RTD2841_FB_BASE,
 +                                        &ms->fb_ram, 1);
@@ -1076,10 +1084,10 @@ index 0000000..34c4527
 +DEFINE_TYPES(rtd2841_types)
 diff --git a/hw/arm/rtd2841_timer.c b/hw/arm/rtd2841_timer.c
 new file mode 100644
-index 0000000..854da4b
+index 0000000..3ca7dc7
 --- /dev/null
 +++ b/hw/arm/rtd2841_timer.c
-@@ -0,0 +1,591 @@
+@@ -0,0 +1,611 @@
 +/*
 + * Realtek RTD2841 / RTK284x Hardware Timer & Watchdog Controller model (tv030)
 + *
@@ -1181,6 +1189,7 @@ index 0000000..854da4b
 +    uint32_t cr[RTD2841_TIMER_N];    /* control (tc_en/tc_mode/tc_pause)   */
 +    uint32_t icr[RTD2841_TIMER_N];   /* interrupt ctrl (tc_ie)             */
 +    uint32_t isr;                    /* raw timer expiry flags, TC0->bit0  */
++    bool oneshot_pending[RTD2841_TIMER_N];
 +};
 +
 +static bool rtd2841_running(RTD2841TimerState *s, int id)
@@ -1220,16 +1229,31 @@ index 0000000..854da4b
 +static void rtd2841_timer_expire(void *opaque)
 +{
 +    Rtd2841TimerCb *c = opaque;
-+    ptimer_state *t = c->parent->timer[c->id];
-+    uint64_t limit = ptimer_get_limit(t);
++    RTD2841TimerState *s = c->parent;
++    int id = c->id;
++    ptimer_state *t = s->timer[id];
 +
-+    if (limit > 0xFFFFFFFFULL) {
-+        ptimer_transaction_begin(t);
-+        ptimer_set_limit(t, limit & 0xFFFFFFFFULL, 0);
-+        ptimer_transaction_commit(t);
++    if (s->cr[id] & R_CR_PERIOD) {
++        s->isr |= (1u << id);
++        rtd2841_timer_update_irq(s);
++    } else {
++        if (s->oneshot_pending[id]) {
++            s->oneshot_pending[id] = false;
++            s->isr |= (1u << id);
++            rtd2841_timer_update_irq(s);
++        }
++        /*
++         * One-shot timer expired: in hardware, CVR does not freeze.
++         * The counter continues counting up monotonically (modulo 2^32).
++         * Keep ptimer running with 32-bit rollover so CVR advances.
++         * Note: Callback is already inside an active transaction.
++         */
++        uint64_t limit = ptimer_get_limit(t);
++        uint32_t cur_val = (uint32_t)limit;
++        ptimer_set_limit(t, 0xFFFFFFFFULL, 0);
++        ptimer_set_count(t, 0xFFFFFFFFULL - cur_val);
++        ptimer_run(t, 0);
 +    }
-+    c->parent->isr |= (1u << c->id);
-+    rtd2841_timer_update_irq(c->parent);
 +}
 +
 +/* Start the hardware counter: preload CVR from TVR, then run.
@@ -1253,6 +1277,7 @@ index 0000000..854da4b
 +            ptimer_set_count(t, count ? count : 0xFFFFFFFF);
 +        }
 +    }
++    s->oneshot_pending[id] = !periodic;
 +    ptimer_run(t, periodic ? 0 : 1);
 +    ptimer_transaction_commit(t);
 +}
@@ -1277,7 +1302,7 @@ index 0000000..854da4b
 +        id = (addr - R_CVR0) / 4;
 +        limit = ptimer_get_limit(s->timer[id]);
 +        count = ptimer_get_count(s->timer[id]);
-+        return (limit >= count) ? (uint32_t)(limit - count) : 0;
++        return (uint32_t)(limit - count);
 +    } else if (addr < 0x60) {               /* TIMER_TCxCR */
 +        id = (addr - R_CR0) / 4;
 +        return s->cr[id];
@@ -1314,28 +1339,33 @@ index 0000000..854da4b
 +        {
 +            ptimer_state *t = s->timer[id];
 +            if (rtd2841_running(s, id)) {
-+                uint64_t limit = ptimer_get_limit(t);
-+                uint64_t count = ptimer_get_count(t);
-+                uint64_t cur = (limit >= count) ? (limit - count) : 0;
-+                uint64_t next;
-+                uint64_t new_limit = val ? val : 0xFFFFFFFFULL;
-+                if (val > cur) {
-+                    next = val - cur;
-+                } else if (val < cur) {
-+                    new_limit = 0x100000000ULL + val;
-+                    next = new_limit - cur;
++                if (s->cr[id] & R_CR_PERIOD) {
++                    uint32_t period = val ? val : 0xFFFFFFFF;
++                    ptimer_transaction_begin(t);
++                    ptimer_set_limit(t, period, 1);
++                    ptimer_set_count(t, period);
++                    ptimer_run(t, 0);
++                    ptimer_transaction_commit(t);
 +                } else {
-+                    next = 1;
-+                }
-+                if (next == 0) {
-+                    next = 1;
-+                }
++                    uint64_t limit = ptimer_get_limit(t);
++                    uint64_t count = ptimer_get_count(t);
++                    uint32_t cur = (uint32_t)(limit - count);
++                    uint32_t next = (uint32_t)(val - cur);
++                    uint64_t new_limit;
 +
-+                ptimer_transaction_begin(t);
-+                ptimer_set_limit(t, new_limit, 0);
-+                ptimer_set_count(t, next);
-+                ptimer_run(t, (s->cr[id] & R_CR_PERIOD) ? 0 : 1);
-+                ptimer_transaction_commit(t);
++                    if (next == 0) {
++                        next = 1;
++                    }
++                    new_limit = (uint64_t)cur + next;
++
++                    s->oneshot_pending[id] = true;
++
++                    ptimer_transaction_begin(t);
++                    ptimer_set_limit(t, new_limit, 0);
++                    ptimer_set_count(t, next);
++                    ptimer_run(t, 1);
++                    ptimer_transaction_commit(t);
++                }
 +            } else {
 +                ptimer_transaction_begin(t);
 +                ptimer_set_limit(t, val ? val : 0xFFFFFFFFULL, 0);
@@ -1348,17 +1378,14 @@ index 0000000..854da4b
 +        uint64_t limit;
 +        id = (addr - R_CVR0) / 4;
 +        t = s->timer[id];
-+        limit = ptimer_get_limit(t);
++        limit = (s->cr[id] & R_CR_PERIOD) ? (s->tvr[id] ? s->tvr[id] : 0xFFFFFFFFULL) : 0xFFFFFFFFULL;
 +        ptimer_transaction_begin(t);
-+        if (limit == 0) {
-+            limit = s->tvr[id] ? s->tvr[id] : 0xFFFFFFFFULL;
-+            ptimer_set_limit(t, limit, 0);
++        ptimer_set_limit(t, limit, 0);
++        if (limit >= (uint32_t)val) {
++            ptimer_set_count(t, limit - (uint32_t)val);
++        } else {
++            ptimer_set_count(t, 0);
 +        }
-+        if (limit < val) {
-+            limit = val;
-+            ptimer_set_limit(t, limit, 0);
-+        }
-+        ptimer_set_count(t, limit - val);
 +        ptimer_transaction_commit(t);
 +        return;
 +    } else if (addr < 0x60) {               /* TIMER_TCxCR */
@@ -1426,6 +1453,7 @@ index 0000000..854da4b
 +        s->tvr[i] = 0;
 +        s->cr[i] = 0;
 +        s->icr[i] = 0;
++        s->oneshot_pending[i] = false;
 +    }
 +    s->isr = 0;
 +    rtd2841_timer_update_irq(s);
@@ -1673,10 +1701,10 @@ index 0000000..854da4b
 +}
 diff --git a/include/hw/arm/rtd2841.h b/include/hw/arm/rtd2841.h
 new file mode 100644
-index 0000000..ee40490
+index 0000000..8946b1c
 --- /dev/null
 +++ b/include/hw/arm/rtd2841.h
-@@ -0,0 +1,199 @@
+@@ -0,0 +1,201 @@
 +/*
 + * Realtek RTD2841 SoC & Machine Model Definitions
 + * Target: TCL Smart TV RT41 Chassis (profile tv030)
@@ -1742,7 +1770,9 @@ index 0000000..ee40490
 +#define RTD2841_ETH_SIZE            0x00001000ULL           /* 4 KB */
 +#define RTD2841_ETH_SPI             20                      /* SPI 20 */
 +#define RTD2841_ETH_IRQ             (32 + RTD2841_ETH_SPI)  /* GIC INTID 52 */
-+#define RTD2841_ETH_NUM_DESC        256                     /* Ring limit */
++#define RTD2841_ETH_NUM_TX_DESC     64                      /* Realtek driver allocates 64 Tx descs */
++#define RTD2841_ETH_NUM_RX_DESC     256                     /* Realtek driver allocates 256 Rx descs */
++#define RTD2841_ETH_NUM_DESC        RTD2841_ETH_NUM_RX_DESC /* Legacy ring limit */
 +
 +/* Realtek RBUS Peripheral MMIO Apertures & Stubs */
 +#define RTD2841_RBUS_BASE           0x18000000ULL

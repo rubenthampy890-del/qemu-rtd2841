@@ -79,7 +79,7 @@ static void rtd2841_eth_tx(RTD2841EthState *s)
 {
     uint8_t pkt_buf[4096];
     size_t pkt_len = 0;
-    int max_desc = RTD2841_ETH_NUM_DESC;
+    int max_desc = RTD2841_ETH_NUM_TX_DESC;
     bool sent_any = false;
 
     if (!(s->chipcmd & 0x04) || !s->tx_desc_base) {
@@ -92,7 +92,7 @@ static void rtd2841_eth_tx(RTD2841EthState *s)
         uint64_t dma_addr;
         uint32_t frag_len;
 
-        s->cur_tx %= RTD2841_ETH_NUM_DESC;
+        s->cur_tx %= RTD2841_ETH_NUM_TX_DESC;
         desc_addr = s->tx_desc_base + (s->cur_tx * 16);
 
         address_space_read(&address_space_memory, desc_addr,
@@ -106,6 +106,10 @@ static void rtd2841_eth_tx(RTD2841EthState *s)
         address_space_read(&address_space_memory, desc_addr + 8,
                            MEMTXATTRS_UNSPECIFIED, &dma_addr, 8);
         dma_addr = le64_to_cpu(dma_addr);
+
+        if (dma_addr == 0 || dma_addr >= RTD2841_RAM_SIZE) {
+            break;
+        }
 
         frag_len = opts1 & RTK_DESC_LEN_MASK;
         if (opts1 & RTK_DESC_FS) {
@@ -135,7 +139,7 @@ static void rtd2841_eth_tx(RTD2841EthState *s)
         if (opts1 & RTK_DESC_EOR) {
             s->cur_tx = 0;
         } else {
-            s->cur_tx = (s->cur_tx + 1) % RTD2841_ETH_NUM_DESC;
+            s->cur_tx = (s->cur_tx + 1) % RTD2841_ETH_NUM_TX_DESC;
         }
     }
 
@@ -155,7 +159,7 @@ static bool rtd2841_eth_can_receive(NetClientState *nc)
         return false;
     }
 
-    s->cur_rx %= RTD2841_ETH_NUM_DESC;
+    s->cur_rx %= RTD2841_ETH_NUM_RX_DESC;
     desc_addr = s->rx_desc_base + (s->cur_rx * 16);
     address_space_read(&address_space_memory, desc_addr,
                        MEMTXATTRS_UNSPECIFIED, &opts1, 4);
@@ -182,7 +186,7 @@ static ssize_t rtd2841_eth_receive(NetClientState *nc, const uint8_t *buf,
         return 0;
     }
 
-    s->cur_rx %= RTD2841_ETH_NUM_DESC;
+    s->cur_rx %= RTD2841_ETH_NUM_RX_DESC;
     desc_addr = s->rx_desc_base + (s->cur_rx * 16);
     address_space_read(&address_space_memory, desc_addr,
                        MEMTXATTRS_UNSPECIFIED, &opts1, 4);
@@ -210,6 +214,10 @@ static ssize_t rtd2841_eth_receive(NetClientState *nc, const uint8_t *buf,
                        MEMTXATTRS_UNSPECIFIED, &dma_addr, 8);
     dma_addr = le64_to_cpu(dma_addr);
 
+    if (dma_addr == 0 || dma_addr >= RTD2841_RAM_SIZE) {
+        return 0;
+    }
+
     address_space_write(&address_space_memory, dma_addr,
                         MEMTXATTRS_UNSPECIFIED, buf, size);
 
@@ -227,7 +235,7 @@ static ssize_t rtd2841_eth_receive(NetClientState *nc, const uint8_t *buf,
     if (eor) {
         s->cur_rx = 0;
     } else {
-        s->cur_rx = (s->cur_rx + 1) % RTD2841_ETH_NUM_DESC;
+        s->cur_rx = (s->cur_rx + 1) % RTD2841_ETH_NUM_RX_DESC;
     }
 
     s->intr_status |= 0x0001; /* RxOK */
@@ -949,9 +957,9 @@ static void rtd2841_tv030_init(MachineState *machine)
                                         RTD2841_RAM_BASE,
                                         machine->ram, -1);
 
-    /* Framebuffer carveout @ 0x3E000000 (8MB) */
-    memory_region_init_ram(&ms->fb_ram, NULL, "rtd2841.fb",
-                           RTD2841_FB_SIZE, &error_fatal);
+    /* Framebuffer carveout alias @ 0x3E000000 (8MB into machine->ram) */
+    memory_region_init_alias(&ms->fb_ram, OBJECT(machine), "rtd2841.fb",
+                             machine->ram, RTD2841_FB_BASE, RTD2841_FB_SIZE);
     memory_region_add_subregion_overlap(get_system_memory(),
                                         RTD2841_FB_BASE,
                                         &ms->fb_ram, 1);

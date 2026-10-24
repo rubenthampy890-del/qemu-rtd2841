@@ -66,6 +66,25 @@ def find_storage():
             return c
     return None
 
+def find_available_port(preferred=5555):
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", preferred))
+            return preferred
+        except OSError:
+            pass
+    for p in range(5556, 5576):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind(("127.0.0.1", p))
+                return p
+            except OSError:
+                continue
+    return None
+
 current_proc = None
 
 def sig_handler(signum, frame):
@@ -286,12 +305,17 @@ def main():
     kernel_img = find_kernel()
     storage_img = find_storage()
     if kernel_img and storage_img:
+        ci_port = find_available_port(5555)
+        if ci_port:
+            nic_arg = f"user,model=rtd2841-eth,hostfwd=tcp::{ci_port}-:5555"
+        else:
+            nic_arg = "user,model=rtd2841-eth"
         t3 = run_test(
             "Tier 3: Full-System Linux 4.4 Kernel Boot & Live Outbound Network Connectivity",
             [
                 "-drive", f"file={storage_img},format=raw,if=sd",
-                "-append", "console=tty0 console=ttyS0,115200 earlyprintk root=/dev/mmcblk0p1 rw init=/init androidboot.selinux=permissive",
-                "-nic", "user,model=rtd2841-eth,hostfwd=tcp::5555-:5555",
+                "-append", "console=tty0 console=ttyS0,115200 earlyprintk root=/dev/mmcblk0p1 rw init=/init androidboot.selinux=permissive consoleblank=0",
+                "-nic", nic_arg,
             ],
             "[>>> NETWORK SUBSYSTEM VERIFICATION TESTS PASSED <<<]",
             kernel_bin=kernel_img,

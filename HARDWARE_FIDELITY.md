@@ -24,7 +24,7 @@ Platform peripherals are categorized into four implementation tiers:
 | **Watchdog** | `0x18062200` | 256 B | SPI 0 (INTID 32) | **Register Stub** | Read/write register scaffold (`WDOG_TCWCR`, `WDOG_TCWTR`) to prevent kernel watchdog driver reboot loops. |
 | **TMU (Thermal)** | `0x18000000` | 1 KB | N/A | **Unimplemented** | Returns 0. Kernel thermal driver logs warning but boot continues. Safe for diagnostic and Linux boot paths. |
 | **SYSREG / Clocks** | `0x18000400` | 3 KB | N/A | **Unimplemented** | Returns 0. Fixed clock frequencies provided directly by Device Tree. |
-| **Mali GPU** | `0x18040000` | 16 KB | SPI 12 (INTID 44) | **Unimplemented** | Returns 0. Hardware 3D graphics acceleration not implemented. |
+| **Mali GPU** | `0x18040000` | 16 KB | SPI 26/27/14 (INTID 58/59/46) | **Unimplemented** | Returns 0. Hardware 3D graphics acceleration not implemented. Interrupts configured as 3-cell SPI 26 (JOB), SPI 27 (MMU), SPI 14 (GPU). |
 | **Audio DSP / ADMA** | `0x18006600` | 4 KB | SPI 5 (INTID 37) | **Unimplemented** | Returns 0. Audio DSP and ADMA ring buffers not implemented. |
 | **IR Remote Decoder** | `0x18061400` | 256 B | SPI 25 (INTID 57) | **Unimplemented** | Returns 0. Hardware IR receiver peripheral not implemented. |
 | **ARM TSG** | `0x1805C800` | 256 B | N/A | **Unimplemented** | Returns 0. Time-stamping generator registers return 0 safely. |
