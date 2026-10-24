@@ -94,6 +94,9 @@ static void rtd2841_eth_tx(RTD2841EthState *s)
 
         s->cur_tx %= RTD2841_ETH_NUM_TX_DESC;
         desc_addr = s->tx_desc_base + (s->cur_tx * 16);
+        if (desc_addr == 0 || desc_addr >= RTD2841_RAM_SIZE - 16) {
+            break;
+        }
 
         address_space_read(&address_space_memory, desc_addr,
                            MEMTXATTRS_UNSPECIFIED, &opts1, 4);
@@ -107,11 +110,12 @@ static void rtd2841_eth_tx(RTD2841EthState *s)
                            MEMTXATTRS_UNSPECIFIED, &dma_addr, 8);
         dma_addr = le64_to_cpu(dma_addr);
 
-        if (dma_addr == 0 || dma_addr >= RTD2841_RAM_SIZE) {
+        frag_len = opts1 & RTK_DESC_LEN_MASK;
+
+        if (dma_addr == 0 || dma_addr >= RTD2841_RAM_SIZE ||
+            frag_len > RTD2841_RAM_SIZE - dma_addr) {
             break;
         }
-
-        frag_len = opts1 & RTK_DESC_LEN_MASK;
         if (opts1 & RTK_DESC_FS) {
             pkt_len = 0;
         }
@@ -161,6 +165,9 @@ static bool rtd2841_eth_can_receive(NetClientState *nc)
 
     s->cur_rx %= RTD2841_ETH_NUM_RX_DESC;
     desc_addr = s->rx_desc_base + (s->cur_rx * 16);
+    if (desc_addr == 0 || desc_addr >= RTD2841_RAM_SIZE - 16) {
+        return false;
+    }
     address_space_read(&address_space_memory, desc_addr,
                        MEMTXATTRS_UNSPECIFIED, &opts1, 4);
     opts1 = le32_to_cpu(opts1);
@@ -188,6 +195,9 @@ static ssize_t rtd2841_eth_receive(NetClientState *nc, const uint8_t *buf,
 
     s->cur_rx %= RTD2841_ETH_NUM_RX_DESC;
     desc_addr = s->rx_desc_base + (s->cur_rx * 16);
+    if (desc_addr == 0 || desc_addr >= RTD2841_RAM_SIZE - 16) {
+        return -1;
+    }
     address_space_read(&address_space_memory, desc_addr,
                        MEMTXATTRS_UNSPECIFIED, &opts1, 4);
     opts1 = le32_to_cpu(opts1);
@@ -214,7 +224,8 @@ static ssize_t rtd2841_eth_receive(NetClientState *nc, const uint8_t *buf,
                        MEMTXATTRS_UNSPECIFIED, &dma_addr, 8);
     dma_addr = le64_to_cpu(dma_addr);
 
-    if (dma_addr == 0 || dma_addr >= RTD2841_RAM_SIZE) {
+    if (dma_addr == 0 || dma_addr >= RTD2841_RAM_SIZE ||
+        size > RTD2841_RAM_SIZE - dma_addr) {
         return 0;
     }
 

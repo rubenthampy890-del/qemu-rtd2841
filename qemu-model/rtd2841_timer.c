@@ -146,12 +146,11 @@ static void rtd2841_timer_expire(void *opaque)
     if (s->cr[id] & R_CR_PERIOD) {
         s->isr |= (1u << id);
         rtd2841_timer_update_irq(s);
-    } else {
-        if (s->oneshot_pending[id]) {
-            s->oneshot_pending[id] = false;
-            s->isr |= (1u << id);
-            rtd2841_timer_update_irq(s);
-        }
+    } else if (s->oneshot_pending[id]) {
+        s->oneshot_pending[id] = false;
+        s->isr |= (1u << id);
+        rtd2841_timer_update_irq(s);
+
         /*
          * One-shot timer expired: in hardware, CVR does not freeze.
          * The counter continues counting up monotonically (modulo 2^32).
@@ -160,8 +159,12 @@ static void rtd2841_timer_expire(void *opaque)
          */
         uint64_t limit = ptimer_get_limit(t);
         uint32_t cur_val = (uint32_t)limit;
+        uint64_t next_count = 0xFFFFFFFFULL - cur_val;
+        if (next_count == 0) {
+            next_count = 0xFFFFFFFFULL;
+        }
         ptimer_set_limit(t, 0xFFFFFFFFULL, 0);
-        ptimer_set_count(t, 0xFFFFFFFFULL - cur_val);
+        ptimer_set_count(t, next_count);
         ptimer_run(t, 0);
     }
 }
@@ -194,6 +197,7 @@ static void rtd2841_timer_start(RTD2841TimerState *s, int id,
 
 static void rtd2841_timer_halt(RTD2841TimerState *s, int id)
 {
+    s->oneshot_pending[id] = false;
     ptimer_transaction_begin(s->timer[id]);
     ptimer_stop(s->timer[id]);
     ptimer_transaction_commit(s->timer[id]);
@@ -278,23 +282,38 @@ static void rtd2841_timer_write(void *opaque, hwaddr addr, uint64_t val,
                 }
             } else {
                 ptimer_transaction_begin(t);
-                ptimer_set_limit(t, val ? val : 0xFFFFFFFFULL, 0);
+                if (s->cr[id] & R_CR_PERIOD) {
+                    ptimer_set_limit(t, val ? val : 0xFFFFFFFFULL, 0);
+                } else {
+                    ptimer_set_limit(t, 0xFFFFFFFFULL, 0);
+                }
                 ptimer_transaction_commit(t);
             }
         }
         return;
     } else if (addr < 0x40) {               /* TIMER_TCxCVR */
         ptimer_state *t;
-        uint64_t limit;
+        uint32_t v = (uint32_t)val;
         id = (addr - R_CVR0) / 4;
         t = s->timer[id];
-        limit = (s->cr[id] & R_CR_PERIOD) ? (s->tvr[id] ? s->tvr[id] : 0xFFFFFFFFULL) : 0xFFFFFFFFULL;
         ptimer_transaction_begin(t);
-        ptimer_set_limit(t, limit, 0);
-        if (limit >= (uint32_t)val) {
-            ptimer_set_count(t, limit - (uint32_t)val);
+        if (rtd2841_running(s, id) && !(s->cr[id] & R_CR_PERIOD) && s->oneshot_pending[id]) {
+            uint32_t next = (uint32_t)(s->tvr[id] - v);
+            uint64_t new_limit;
+            if (next == 0) {
+                next = 1;
+            }
+            new_limit = (uint64_t)v + next;
+            ptimer_set_limit(t, new_limit, 0);
+            ptimer_set_count(t, next);
+            ptimer_run(t, 1);
+        } else if (s->cr[id] & R_CR_PERIOD) {
+            uint64_t limit = s->tvr[id] ? s->tvr[id] : 0xFFFFFFFFULL;
+            ptimer_set_limit(t, limit, 0);
+            ptimer_set_count(t, (limit >= v) ? (limit - v) : 0);
         } else {
-            ptimer_set_count(t, 0);
+            ptimer_set_limit(t, 0xFFFFFFFFULL, 0);
+            ptimer_set_count(t, 0xFFFFFFFFULL - v);
         }
         ptimer_transaction_commit(t);
         return;
@@ -364,6 +383,10 @@ static void rtd2841_timer_reset(DeviceState *dev)
         s->cr[i] = 0;
         s->icr[i] = 0;
         s->oneshot_pending[i] = false;
+        ptimer_transaction_begin(s->timer[i]);
+        ptimer_set_limit(s->timer[i], 0xFFFFFFFFULL, 1);
+        ptimer_set_count(s->timer[i], 0xFFFFFFFFULL);
+        ptimer_transaction_commit(s->timer[i]);
     }
     s->isr = 0;
     rtd2841_timer_update_irq(s);
@@ -384,6 +407,8 @@ static void rtd2841_timer_realize(DeviceState *dev, Error **errp)
 
         ptimer_transaction_begin(s->timer[i]);
         ptimer_set_freq(s->timer[i], (uint32_t)RTD2841_TIMER_CLK);
+        ptimer_set_limit(s->timer[i], 0xFFFFFFFFULL, 1);
+        ptimer_set_count(s->timer[i], 0xFFFFFFFFULL);
         ptimer_transaction_commit(s->timer[i]);
     }
 
