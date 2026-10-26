@@ -17,7 +17,13 @@ Platform emulation is evaluated across three strictly defined testing tiers to e
 
 - **Tier 1: Automated Headless CI Bare-Metal Silicon Suite**: Runs in <10s on GitHub Actions (`ubuntu-latest`) with zero proprietary blobs. Verifies Cortex-A53 in AArch32 mode, GICv2 distributor (256 INTIDs), Realtek TC0 27 MHz monotonic timer up-count & CPU INTID 34 IRQ trap delivery, SDHCI controller MMIO capabilities, and RTL8168GU Ethernet bare-metal packet TX/RX exchange via QEMU SLIRP.
 - **Tier 2: Storage Media Insertion Suite**: Verifies SDHCI controller with synthetic drive attached (`-drive file=...,format=raw,if=sd`), asserting media presence and block ready status (`PRSNT_ST = 0x01FF0000`).
-- **Tier 3: Full-System Linux 4.4 & Userspace Bring-Up**: Runs on developer benches and self-hosted CI with vendor firmware. Verifies SMP boot, dual ext4 filesystem mount (`/system`, `/vendor`), simple-framebuffer console, and live outbound network connectivity (ICMP ping, DNS resolution, HTTP fetch).
+- **Tier 3: Full-System Linux 4.4 & Userspace Bring-Up**: Requires local vendor firmware and is skipped by public CI. On October 26, 2026, an isolated rebuild of the vendor kernel and QEMU model passed the stricter local runner with four CPUs, both ext4 mounts, DHCP, zero packet loss, DNS, and HTTP. The original prebuilt kernel still activates only CPU 0. The isolated kernel build disables five unavailable netfilter options; see [HARDWARE_FIDELITY.md](HARDWARE_FIDELITY.md) for the exact scope.
+
+Phase 3 has also reached authenticated TCP ADB: the extracted ARM32 `adbd`
+started directly from the source-built `mini_init` on a fresh local guest
+boot, and a host ADB shell returned successfully. This was verified only with
+a disposable disk overlay and a local test key; Android init and framework
+services remain open. See [Phase 3 bring-up evidence](docs/phase3/BRINGUP_STATUS.md).
 
 ---
 
@@ -58,7 +64,7 @@ Target: Realtek RTD2841 / TCL RT41 Chassis (tv030)
 
 ## What's Implemented
 
-- **Cortex-A53 quad-core**: Pinned to AArch32 mode (`aarch64=false`) to match Realtek's 32-bit TV firmware stack. Core 0 boots directly; cores 1-3 start powered off and wait for PSCI `CPU_ON` or jump mailbox at `0x504`.
+- **Cortex-A53 quad-core**: Pinned to AArch32 mode (`aarch64=false`) to match Realtek's 32-bit TV firmware stack. The per-core mailboxes at `0x504`, `0x508`, and `0x50c` passed bare-metal release and reset tests, then brought all four CPUs online with the isolated vendor kernel rebuild.
 - **GIC-400 (GICv2)**: Distributor at `0x18081000`, CPU interface at `0x18082000`, 256 IRQs.
 - **16550A UART0**: Base `0x18062300`, 4-byte register stride (`shift = 2`), 27 MHz clock. Mapped to stdio.
 - **Hardware Timers**: **Fully Verified** — 8 independent 27 MHz monotonic up-counters (`TC0`..`TC7`) at `0x1801B600` (reporting `limit - count` to CVR registers) with periodic reload, matching Realtek Linux `sched_clock`. Verified via active monotonic up-count assertion and GIC INTID 34 hardware CPU IRQ trap delivery.

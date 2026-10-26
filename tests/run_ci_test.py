@@ -9,6 +9,8 @@ import os
 import time
 import selectors
 import signal
+import shutil
+import tempfile
 
 try:
     import fcntl
@@ -64,6 +66,17 @@ def find_storage():
     for c in cands:
         if os.path.isfile(c):
             return c
+    return None
+
+def find_qemu_img():
+    candidates = [
+        os.environ.get("QEMU_IMG"),
+        os.path.join(os.path.dirname(find_qemu() or ""), "qemu-img"),
+        shutil.which("qemu-img"),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
     return None
 
 def find_available_port(preferred=5555):
@@ -305,22 +318,57 @@ def main():
     kernel_img = find_kernel()
     storage_img = find_storage()
     if kernel_img and storage_img:
-        ci_port = find_available_port(5555)
-        if ci_port:
-            nic_arg = f"user,model=rtd2841-eth,hostfwd=tcp::{ci_port}-:5555"
+        qemu_img = find_qemu_img()
+        if not qemu_img:
+            print("[-] Tier 3 requires qemu-img for an isolated disk overlay.", file=sys.stderr)
+            t3 = False
         else:
-            nic_arg = "user,model=rtd2841-eth"
-        t3 = run_test(
-            "Tier 3: Full-System Linux 4.4 Kernel Boot & Live Outbound Network Connectivity",
-            [
-                "-drive", f"file={storage_img},format=raw,if=sd",
-                "-append", "console=tty0 console=ttyS0,115200 earlyprintk root=/dev/mmcblk0p1 rw init=/init androidboot.selinux=permissive consoleblank=0",
-                "-nic", nic_arg,
-            ],
-            "[>>> NETWORK SUBSYSTEM VERIFICATION TESTS PASSED <<<]",
-            kernel_bin=kernel_img,
-            timeout_sec=45.0,
-        )
+            with tempfile.TemporaryDirectory(prefix="opendtv-tier3-") as tmpdir:
+                overlay = os.path.join(tmpdir, "emmc-overlay.qcow2")
+                create = None
+                try:
+                    create = subprocess.run(
+                        [qemu_img, "create", "-f", "qcow2", "-b",
+                         os.path.realpath(storage_img), "-F", "raw", overlay],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                except subprocess.TimeoutExpired:
+                    print("[-] Tier 3 overlay creation timed out after 30s.",
+                          file=sys.stderr)
+                    t3 = False
+                else:
+                    t3 = create.returncode == 0
+                if create is not None and create.returncode != 0:
+                    print(f"[-] Tier 3 overlay creation failed: rc={create.returncode}: "
+                          f"{create.stderr.strip()}", file=sys.stderr)
+                if t3:
+                    ci_port = find_available_port(5555)
+                    if ci_port:
+                        nic_arg = f"user,model=rtd2841-eth,hostfwd=tcp::{ci_port}-:5555"
+                    else:
+                        nic_arg = "user,model=rtd2841-eth"
+                    t3 = run_test(
+                        "Tier 3: Full-System Linux 4.4 Kernel Boot & Live Outbound Network Connectivity",
+                        [
+                            "-drive", f"file={overlay},format=qcow2,if=sd",
+                            "-append", "console=tty0 console=ttyS0,115200 earlyprintk root=/dev/mmcblk0p1 rw init=/init androidboot.selinux=permissive consoleblank=0",
+                            "-nic", nic_arg,
+                        ],
+                        [
+                            "SMP: Total of 4 processors activated",
+                            "VFS: Mounted root (ext4 filesystem) on device 179:1",
+                            "Mounted /vendor from /dev/mmcblk0p2 (ext4)",
+                            "Lease of 10.0.2.15 obtained",
+                            "2 packets transmitted, 2 received, 0% packet loss",
+                            "Live Network Verification: DNS resolution (",
+                            "-> google.com) succeeded!",
+                            "Live Network Verification: HTTP fetch (",
+                            ":80) succeeded!",
+                            "[>>> NETWORK SUBSYSTEM VERIFICATION TESTS PASSED <<<]",
+                        ],
+                        kernel_bin=kernel_img,
+                        timeout_sec=120.0,
+                    )
         if not t3:
             success = False
     else:

@@ -14,7 +14,7 @@ Platform peripherals are categorized into four implementation tiers:
 
 | Subsystem | Physical Base | Size | Interrupt (GIC) | Implementation Type | Driver Status & Test Notes |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Cortex-A53 x4** | N/A | N/A | ARM Generic PPIs | **Custom Wiring** | Pinned to AArch32 mode (`aarch64=false`). CPU 0 boots directly; SMP secondary cores use holding pen mailbox at `0x504`. |
+| **Cortex-A53 x4** | N/A | N/A | ARM Generic PPIs | **Custom Wiring** | AArch32. Per-core mailbox release and reset passed bare-metal tests; an isolated vendor kernel rebuild booted four CPUs. The old reference zImage activates only CPU 0. |
 | **GIC-400 (GICv2)** | `0x18081000` (GICD)<br>`0x18082000` (GICC) | 4 KB<br>8 KB | N/A | **Upstream QEMU** | Upstream `TYPE_ARM_GIC`, 256 physical INTIDs, verified via `GICD_TYPER=0x67`. |
 | **16550A UART0** | `0x18062300` | 32 B | SPI 25 (INTID 57) | **Upstream QEMU** | Upstream `serial_mm_init` with 4-byte register stride (`shift=2`), clocked at 27 MHz (`baudbase=1687500`). |
 | **Timers TC0..TC7** | `0x1801B600` | 512 B | SPI 2 (INTID 34) | **Custom Model** | **Fully Verified**: `hw/arm/rtd2841_timer.c`: 8 independent 27 MHz monotonic up-counters (`limit - count` returned to CVR), periodic rearming, ptimer backend. Monotonic up-count verified + GIC INTID 34 hardware CPU IRQ trap verified. |
@@ -56,7 +56,16 @@ To provide transparent validation boundaries for continuous integration and exte
 ### Tier 3: Full-System Linux 4.4 & Userspace Bring-Up
 - **Runtime**: Developer workstations and self-hosted CI runner environments with vendor firmware.
 - **Dependencies**: Realtek Linux 4.4.3 kernel (`zImage`) and vendor dual-partition eMMC disk image (`staging/emmc.raw` / `storage.img`).
-- **Assertions**:
+- **Current status**: The October 26 isolated QEMU and vendor kernel rebuild passed all three local runner tiers. The Tier 3 serial log recorded four CPUs, both ext4 mounts, a DHCP lease, two received pings with 0% packet loss, DNS, and HTTP. Guest shell probes confirmed `online=0-3` and returned zero. The prior prebuilt zImage activated only CPU 0. Public CI runs only Tiers 1 and 2.
+- **Phase 3 userspace extension (local only)**: The actual extracted ARM32
+  `/system/bin/adbd` was launched by source-built `mini_init` on a fresh boot
+  from a disposable qcow2 overlay. The guest process was present, host ADB
+  reported `device`, and `adb shell` returned 0. This proves the emulated
+  Ethernet and kernel support this daemon path; Android init, property service,
+  and framework startup remain unverified. Exact logs and SHA-256 identities
+  are in [the Phase 3 bring-up record](docs/phase3/BRINGUP_STATUS.md).
+- **Rebuild scope**: The kernel source correction removes duplicate architected timer registration and includes the existing `sdhci-rtd2841.c` in the MMC host build. The supplied source tree lacks four enabled uppercase netfilter target files (`xt_DSCP.c`, `xt_HL.c`, `xt_RATEEST.c`, `xt_TCPMSS.c`), so the isolated test configuration disabled those targets and `NETFILTER_XT_MATCH_RATEEST`, which selects the RATEEST target. The source copy also built with `KCFLAGS=-Wno-error=header-guard` for an unrelated vendor header typo. This is an emulation test image, not a byte-identical rebuild of the original zImage.
+- **Required assertions**:
   - Multi-core SMP bring-up and holding pen jump mailbox execution.
   - Mounting dual ext4 partitions (`/system` and `/vendor`) via checked userspace syscalls.
   - Framebuffer display refresh with interactive UI controls.
@@ -68,14 +77,14 @@ To provide transparent validation boundaries for continuous integration and exte
 
 - **Cores**: Quad ARM Cortex-A53.
 - **Execution Mode**: 32-bit AArch32. Realtek's Android TV stack (TCL RT41) is built for `armv7-a` with VFPv4/NEON.
-- **Boot Flow**: Core 0 jumps directly to reset vector (`0x00000000`). Cores 1..3 remain powered down until PSCI `CPU_ON` is invoked or the kernel writes to the jump mailbox.
+- **Boot Flow**: Core 0 boots directly. The custom secondary monitor releases cores 1..3 through separate mailboxes. Bare-metal tests verified release and reset; the isolated vendor kernel boot verified all four CPUs online.
 - **SMP Mailbox (`arch/arm/mach-rtd284x/include/mach/system.h`)**:
   ```c
   #define DUMMY_REG_FOR_2ND_CPU_JUMPADDRESS    0x00000504
   #define DUMMY_REG_FOR_3RD_CPU_JUMPADDRESS    0x00000508
   #define DUMMY_REG_FOR_4TH_CPU_JUMPADDRESS    0x0000050C
   ```
-  In QEMU, `boot_info.smp_bootreg_addr` is set to `0x00000504`.
+  The model uses these three distinct addresses. A single boot register address does not establish the per-core release protocol.
 
 ---
 

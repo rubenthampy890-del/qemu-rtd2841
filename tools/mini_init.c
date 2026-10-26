@@ -480,7 +480,13 @@ static int run_process(const char *cmd, char *const proc_argv[], int wait) {
         return (int)pid;
     }
     if (pid == 0) {
-        my_syscall3(11 /* __NR_execve */, (long)cmd, (long)proc_argv, (long)envp);
+        long exec_rc = my_syscall3(11 /* __NR_execve */, (long)cmd,
+                                   (long)proc_argv, (long)envp);
+        print_str("[-] FAILED: execve failed for ");
+        print_str(cmd);
+        print_str(", rc=");
+        print_dec(exec_rc);
+        print_str("\n");
         my_syscall1(1 /* __NR_exit */, 127);
     }
     if (pid > 0 && wait) {
@@ -919,6 +925,16 @@ void _start(void) {
 
     /* 7. Initialize Network Subsystem (eth0, DHCP, DNS, Live Outbound Tests) */
     init_network_and_verify();
+
+    /* adbd is ARM32 static; its authenticated TCP listener is checked by ADB. */
+    static const char str_adbd[] = "/system/bin/adbd";
+    static char *adbd_argv[] = {(char *)str_adbd, 0};
+    int adbd_pid = run_process(str_adbd, adbd_argv, 0);
+    if (adbd_pid > 0) {
+        print_str("[*] adbd child spawned, pid=");
+        print_dec(adbd_pid);
+        print_str("; TCP and authentication require an ADB probe\n");
+    }
 
     /* 8. Take over /dev/fb0 with high-definition TCL Smart TV Dashboard */
     paint_tcl_tv_display();

@@ -8,9 +8,12 @@ OBJCOPY       := $(CROSS_COMPILE)objcopy
 ASFLAGS       := -mcpu=cortex-a53
 LDFLAGS       := -Ttext 0x10000
 
-TARGETS       := firmware_test.bin firmware_fb_test.bin
+TARGETS       := firmware_test.bin firmware_fb_test.bin firmware_smp_test.bin
 
-all: $(TARGETS)
+all: $(TARGETS) check-smpboot
+
+check-smpboot:
+	python3 check_smpboot.py
 
 firmware_test.bin: firmware_test.s
 	$(AS) $(ASFLAGS) $< -o firmware_test.o
@@ -24,7 +27,13 @@ firmware_fb_test.bin: firmware_fb_test.s
 	$(OBJCOPY) -O binary firmware_fb_test.elf $@
 	rm -f firmware_fb_test.o firmware_fb_test.elf
 
+firmware_smp_test.bin: firmware_smp_test.s
+	$(AS) $(ASFLAGS) $< -o firmware_smp_test.o
+	$(LD) $(LDFLAGS) firmware_smp_test.o -o firmware_smp_test.elf
+	$(OBJCOPY) -O binary firmware_smp_test.elf $@
+	rm -f firmware_smp_test.o firmware_smp_test.elf
+
 clean:
 	rm -f $(TARGETS) *.o *.elf
 
-.PHONY: all clean
+.PHONY: all clean check-smpboot

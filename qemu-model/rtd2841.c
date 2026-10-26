@@ -8,8 +8,7 @@
  * - 16550A-compatible UART0 console at 0x18062300 (mapped to serial stdio)
  * - Realtek Gigabit Ethernet MAC (RTL8168GU) at 0x18016000 (GIC SPI 20 / ID 52)
  * - Realtek generic-sdhci eMMC storage controller at 0x18010800 (GIC SPI 18)
- * - PSCI firmware SMP power-state coordination interface (SMC conduit)
- * - Secondary CPU start-powered-off coordination and jump mailbox at 0x504
+ * - Linux direct-boot assistance for per-CPU startup mailboxes
  * - Stubbed memory apertures for hardware peripherals (TMU, SYSREG, SDIO, etc.)
  *
  * Target Firmware: TCL RT41 Chassis (TCL Android / Linux 4.4.3 TV firmware)
@@ -673,6 +672,88 @@ static void rtd2841_eth_class_init(ObjectClass *oc, const void *data)
 /* SoC Core & Board Model                                             */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Assembled from rtd2841-smpboot.S; tests/check_smpboot.py checks the words.
+ * The vendor kernel reserves low bootcode memory, including 0x1000. This
+ * stackless monitor is below both supported initial page-table locations
+ * (0x4000 and 0x104000), separate from the primary loader and mailboxes.
+ * It models the kernel-facing release contract, not the retail boot ROM.
+ */
+static const ARMInsnFixup rtd2841_smpboot[] = {
+    { 0xee100fb0 }, /* mrc p15, 0, r0, c0, c0, 5 */
+    { 0xe20000ff }, /* and r0, r0, #0xff */
+    { 0xe3500001 }, /* cmp r0, #1 */
+    { 0x3a00000a }, /* blo park */
+    { 0xe3500003 }, /* cmp r0, #3 */
+    { 0x8a000008 }, /* bhi park */
+    { 0xe3001500 }, /* movw r1, #0x500 */
+    { 0xe0811100 }, /* add r1, r1, r0, lsl #2 */
+    { 0xe5912000 }, /* poll: ldr r2, [r1] */
+    { 0xe3520000 }, /* cmp r2, #0 */
+    { 0x1a000001 }, /* bne released */
+    { 0xe320f002 }, /* wfe */
+    { 0xeafffffa }, /* b poll */
+    { 0xf57ff05f }, /* released: dmb sy */
+    { 0xe12fff12 }, /* bx r2 */
+    { 0xe320f002 }, /* park: wfe */
+    { 0xeafffffd }, /* b park */
+    { 0, FIXUP_TERMINATOR }
+};
+
+static void rtd2841_write_secondary(ARMCPU *cpu,
+                                    const struct arm_boot_info *info)
+{
+    CPUState *cs;
+
+    /* Keep the low monitor separate from the loaded image and DTB. */
+    if (info->loader_start != RTD2841_RAM_BASE ||
+        info->entry < 0x10000 ||
+        (!info->dtb_filename && !info->get_dtb) ||
+        info->dtb_start < 0x2000) {
+        error_report("RTD2841 mailbox boot requires a DTB and a kernel "
+                     "entry at or above 0x10000");
+        exit(1);
+    }
+
+    arm_write_bootloader("rtd2841-smpboot",
+                         arm_boot_address_space(cpu, info),
+                         info->smp_loader_start, rtd2841_smpboot, NULL);
+    CPU_FOREACH(cs) {
+        /*
+         * Retain the existing emulated SMC/PSCI service, including its
+         * unsupported response to OP-TEE calls. CPU release for this boot
+         * uses mailboxes, independently of that runtime SMC service.
+         */
+        object_property_set_int(OBJECT(cs), "psci-conduit",
+                                QEMU_PSCI_CONDUIT_SMC, &error_fatal);
+        if (ARM_CPU(cs) != cpu) {
+            object_property_set_bool(OBJECT(cs), "start-powered-off", false,
+                                     &error_fatal);
+        }
+    }
+}
+
+static void rtd2841_reset_secondary(ARMCPU *cpu,
+                                    const struct arm_boot_info *info)
+{
+    unsigned int id = cpu->mp_affinity & 0xff;
+    MemTxResult result;
+
+    if (id < 1 || id >= RTD2841_NUM_CPUS) {
+        error_report("RTD2841 invalid secondary CPU affinity %u", id);
+        exit(1);
+    }
+    address_space_stl(arm_boot_address_space(cpu, info),
+                      RTD2841_SMP_CPU1_JUMP_ADDR + (id - 1) * 4,
+                      0, MEMTXATTRS_UNSPECIFIED, &result);
+    if (result != MEMTX_OK) {
+        error_report("RTD2841 CPU%u mailbox reset failed: MemTxResult=%u",
+                     id, result);
+        exit(1);
+    }
+    cpu_set_pc(CPU(cpu), info->smp_loader_start);
+}
+
 static void rtd2841_soc_init(Object *obj)
 {
     RTD2841SocState *s = RTD2841_SOC(obj);
@@ -711,7 +792,7 @@ static void rtd2841_soc_realize(DeviceState *dev, Error **errp)
                                      &error_fatal);
         }
 
-        /* Secondary cores hold until released by PSCI CPU_ON */
+        /* Direct Linux boot enables the per-CPU mailbox monitors later. */
         if (i > 0) {
             object_property_set_bool(cpuobj, "start-powered-off", true,
                                      &error_fatal);
@@ -998,8 +1079,11 @@ static void rtd2841_tv030_init(MachineState *machine)
     ms->boot_info.ram_size = machine->ram_size;
     ms->boot_info.board_id = -1;
     ms->boot_info.loader_start = RTD2841_RAM_BASE;
-    ms->boot_info.psci_conduit = QEMU_PSCI_CONDUIT_SMC;
+    ms->boot_info.psci_conduit = QEMU_PSCI_CONDUIT_DISABLED;
     ms->boot_info.smp_bootreg_addr = RTD2841_SMP_CPU1_JUMP_ADDR;
+    ms->boot_info.smp_loader_start = 0x1000;
+    ms->boot_info.write_secondary_boot = rtd2841_write_secondary;
+    ms->boot_info.secondary_cpu_reset_hook = rtd2841_reset_secondary;
 
     if (machine->firmware) {
         int fw_size = load_image_targphys(machine->firmware,

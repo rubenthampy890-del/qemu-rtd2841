@@ -1,0 +1,9 @@
+diff --git a/arch/arm/mach-rtd284x/timer.c b/arch/arm/mach-rtd284x/timer.c
+--- a/arch/arm/mach-rtd284x/timer.c
++++ b/arch/arm/mach-rtd284x/timer.c
+@@ -451,5 +451,4 @@ void rtk_timer_init(void)
+     arch_timer_dev_register(TIMER_CLOCK, ppi);
+ #endif
+ #endif
+-    clocksource_probe();
+ }

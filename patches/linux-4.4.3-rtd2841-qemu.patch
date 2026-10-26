@@ -2,7 +2,7 @@ diff --git a/arch/arm/boot/dts/rtd284x-tv030.dts b/arch/arm/boot/dts/rtd284x-tv0
 index e69de29b..c2841001 100644
 --- a/arch/arm/boot/dts/rtd284x-tv030.dts
 +++ b/arch/arm/boot/dts/rtd284x-tv030.dts
-@@ -132,10 +132,23 @@
+@@ -132,12 +132,23 @@
  
  	};
  
@@ -31,7 +31,7 @@ index e69de29b..c2841001 100644
          firmware {
                  optee {
                          compatible = "linaro,optee-tz";
-@@ -144,9 +157,22 @@
+@@ -144,6 +155,26 @@
          };
  
  	chosen {
@@ -59,17 +59,17 @@ index e69de29b..c2841001 100644
 +			     <1 10 0xf08>;
 +		clock-frequency = <27000000>;
 +	};
-diff --git a/arch/arm/mach-rtd284x/timer.c b/arch/arm/mach-rtd284x/timer.c
-index 2149d42c..62482d4f 100644
---- a/arch/arm/mach-rtd284x/timer.c
-+++ b/arch/arm/mach-rtd284x/timer.c
-@@ -451,5 +451,6 @@ void rtk_timer_init(void)
-     arch_timer_dev_register(TIMER_CLOCK, ppi);
- #endif
- #endif
-+    clocksource_probe();
- }
+diff --git a/drivers/mmc/host/Makefile b/drivers/mmc/host/Makefile
+--- a/drivers/mmc/host/Makefile
++++ b/drivers/mmc/host/Makefile
+@@ -73,6 +73,7 @@ obj-$(CONFIG_MMC_REALTEK_PCI)	+= rtsx_pci_sdmmc.o
+ obj-$(CONFIG_MMC_REALTEK_USB)	+= rtsx_usb_sdmmc.o
  
+ obj-$(CONFIG_MMC_SDHCI_PLTFM)		+= sdhci-pltfm.o
++obj-$(CONFIG_MMC_SDHCI_PLTFM)		+= sdhci-rtd2841.o
+ obj-$(CONFIG_MMC_SDHCI_CNS3XXX)		+= sdhci-cns3xxx.o
+ obj-$(CONFIG_MMC_SDHCI_ESDHC_IMX)	+= sdhci-esdhc-imx.o
+ obj-$(CONFIG_MMC_SDHCI_DOVE)		+= sdhci-dove.o
 diff --git a/drivers/irqchip/irq-gic.c b/drivers/irqchip/irq-gic.c
 index 716e9c62..06f35885 100755
 --- a/drivers/irqchip/irq-gic.c

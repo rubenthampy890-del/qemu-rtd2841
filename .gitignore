@@ -6,3 +6,5 @@ __pycache__/
 build/
 staging/
 output/
+artifacts/
+tests/firmware_smp_test.bin
