@@ -62,8 +62,14 @@ To provide transparent validation boundaries for continuous integration and exte
   from a disposable qcow2 overlay. The guest process was present, host ADB
   reported `device`, and `adb shell` returned 0. This proves the emulated
   Ethernet and kernel support this daemon path; Android init, property service,
-  and framework startup remain unverified. Exact logs and SHA-256 identities
-  are in [the Phase 3 bring-up record](docs/phase3/BRINGUP_STATUS.md).
+  and framework startup remain unverified. The detailed test record remains
+  local to the development workspace.
+- **Binder userspace extension (local only)**: The vendor kernel's Binder
+  device node and the extracted ARM32 `servicemanager` were exercised on a
+  fresh disposable-overlay boot. The manager ran as UID/GID 1000 with group
+  3009, and the extracted `service list` client returned 0. Binder is a
+  kernel driver in this test, not a new QEMU peripheral model. This check is
+  separate from the three CI tiers.
 - **Rebuild scope**: The kernel source correction removes duplicate architected timer registration and includes the existing `sdhci-rtd2841.c` in the MMC host build. The supplied source tree lacks four enabled uppercase netfilter target files (`xt_DSCP.c`, `xt_HL.c`, `xt_RATEEST.c`, `xt_TCPMSS.c`), so the isolated test configuration disabled those targets and `NETFILTER_XT_MATCH_RATEEST`, which selects the RATEEST target. The source copy also built with `KCFLAGS=-Wno-error=header-guard` for an unrelated vendor header typo. This is an emulation test image, not a byte-identical rebuild of the original zImage.
 - **Required assertions**:
   - Multi-core SMP bring-up and holding pen jump mailbox execution.

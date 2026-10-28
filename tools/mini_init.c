@@ -228,6 +228,8 @@ static const char str_mnt_path[]    = "/mnt";
 static const char str_storage_path[]= "/storage";
 static const char str_fb_path[]     = "/dev/fb0";
 static const char str_ttyS0[]       = "/dev/ttyS0";
+static const char str_binder[]      = "/dev/binder";
+static const char str_servicemanager[] = "/system/bin/servicemanager";
 
 /* Symlinks for Android Treble compatibility */
 static const char str_system_etc[]  = "/system/etc";
@@ -526,6 +528,72 @@ static int run_process(const char *cmd, char *const proc_argv[], int wait) {
         return -1;
     }
     return (int)pid;
+}
+
+__attribute__((noreturn)) static void exit_sm_child(int status) {
+    my_syscall1(1 /* __NR_exit */, status);
+    for (;;) { }
+}
+
+/* Match the stock servicemanager.rc user/group contract. */
+static int start_servicemanager(void) {
+    unsigned int readproc_gid = 3009;
+    char *sm_argv[] = {(char *)str_servicemanager, 0};
+    long rc;
+
+    /* devtmpfs supplies 0600 root:root without Android ueventd. */
+    rc = my_syscall2(15 /* __NR_chmod */, (long)str_binder, 0666);
+    if (rc != 0) {
+        print_str("[-] FAILED: chmod /dev/binder, rc=");
+        print_dec(rc);
+        print_str("\n");
+        return (int)rc;
+    }
+
+    rc = my_syscall0(2 /* __NR_fork */);
+    if (rc < 0) {
+        print_str("[-] FAILED: fork servicemanager, rc=");
+        print_dec(rc);
+        print_str("\n");
+        return (int)rc;
+    }
+    if (rc == 0) {
+        long child_rc;
+
+        child_rc = my_syscall2(206 /* __NR_setgroups32 */, 1,
+                             (long)&readproc_gid);
+        if (child_rc != 0) {
+            print_str("[-] FAILED: servicemanager setgroups32, rc=");
+            print_dec(child_rc);
+            print_str("\n");
+            exit_sm_child(125);
+        }
+        child_rc = my_syscall3(210 /* __NR_setresgid32 */,
+                              1000, 1000, 1000);
+        if (child_rc != 0) {
+            print_str("[-] FAILED: servicemanager setresgid32, rc=");
+            print_dec(child_rc);
+            print_str("\n");
+            exit_sm_child(125);
+        }
+        child_rc = my_syscall3(208 /* __NR_setresuid32 */,
+                              1000, 1000, 1000);
+        if (child_rc != 0) {
+            print_str("[-] FAILED: servicemanager setresuid32, rc=");
+            print_dec(child_rc);
+            print_str("\n");
+            exit_sm_child(125);
+        }
+        child_rc = my_syscall3(11 /* __NR_execve */,
+                              (long)str_servicemanager,
+                              (long)sm_argv, (long)envp);
+        print_str("[-] FAILED: servicemanager execve, rc=");
+        print_dec(child_rc);
+        print_str("\n");
+        exit_sm_child(127);
+    }
+
+    return (int)rc;
 }
 
 static long skip_dns_name(const unsigned char *buf, long idx, long len) {
@@ -922,6 +990,13 @@ void _start(void) {
     my_syscall2(83 /* __NR_symlink */, (long)str_system_etc, (long)str_etc);
     my_syscall2(83 /* __NR_symlink */, (long)str_vendor_odm, (long)str_odm);
     my_syscall2(83 /* __NR_symlink */, (long)str_system_prod, (long)str_product);
+
+    int sm_pid = start_servicemanager();
+    if (sm_pid > 0) {
+        print_str("[*] servicemanager child spawned, pid=");
+        print_dec(sm_pid);
+        print_str("; Binder readiness requires a client probe\n");
+    }
 
     /* 7. Initialize Network Subsystem (eth0, DHCP, DNS, Live Outbound Tests) */
     init_network_and_verify();

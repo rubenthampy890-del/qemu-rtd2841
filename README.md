@@ -23,7 +23,8 @@ Phase 3 has also reached authenticated TCP ADB: the extracted ARM32 `adbd`
 started directly from the source-built `mini_init` on a fresh local guest
 boot, and a host ADB shell returned successfully. This was verified only with
 a disposable disk overlay and a local test key; Android init and framework
-services remain open. See [Phase 3 bring-up evidence](docs/phase3/BRINGUP_STATUS.md).
+services remain open. Local research notes and test records are kept outside
+the public repository.
 
 ---
 

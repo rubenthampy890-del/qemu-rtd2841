@@ -7,4 +7,8 @@ build/
 staging/
 output/
 artifacts/
+docs/phase3/
+/AGENTS.md
+/codex.md
+/engineering_doctrine.md
 tests/firmware_smp_test.bin
