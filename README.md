@@ -28,40 +28,143 @@ the public repository.
 
 ---
 
-## Quickstart
+## Run it on a new computer
+
+The public repository contains the RTD2841 QEMU patch and bare-metal test
+**source**. It does not contain a built emulator, Android firmware, or the
+vendor Linux kernel. These steps build the emulator and run the two public
+hardware test tiers. They do not boot Android. Run each command in a host
+terminal (macOS or Ubuntu), not inside a QEMU guest.
+
+### 1. Install build tools
+
+On **Ubuntu/Debian**:
 
 ```bash
-# Clone
+sudo apt update
+sudo apt install -y build-essential git ninja-build meson pkg-config \
+    libglib2.0-dev libpixman-1-dev libslirp-dev device-tree-compiler \
+    python3 binutils-arm-none-eabi
+```
+
+On **macOS**, install [Homebrew](https://brew.sh/) and Apple's command line
+tools first. If `xcode-select -p` reports that the tools are missing, run
+`xcode-select --install` and finish the installer. Then run:
+
+```bash
+brew install git ninja meson pkg-config glib pixman libslirp dtc \
+    python arm-none-eabi-binutils
+```
+
+Check the installed commands before continuing:
+
+```bash
+for tool in git ninja dtc python3 arm-none-eabi-as; do
+    command -v "$tool" || exit 1
+done
+pkg-config --modversion slirp
+```
+
+The Ubuntu package set and build sequence match the
+repository's GitHub Actions job. The macOS package set has not been tested
+on a fresh Mac.
+
+### 2. Clone OpenDTV and the pinned QEMU source
+
+```bash
 git clone https://github.com/rubenthampy890-del/qemu-rtd2841.git
 cd qemu-rtd2841
 
-# Run the full automated verification test suite (Core Diagnostics, eMMC Storage, Linux 4.4 Kernel Boot & Live Outbound Network Connectivity)
+mkdir qemu-upstream
+cd qemu-upstream
+git init
+git remote add origin https://gitlab.com/qemu-project/qemu.git
+git fetch --depth 1 origin a19f59a72d96056d9a8f48cf6c77f5787491e414
+git checkout FETCH_HEAD
+```
+
+The long hash is the upstream QEMU revision used by public CI. It matters
+because the RTD2841 patch is tested against that exact source tree.
+
+### 3. Apply the board patch and build QEMU
+
+Still inside `qemu-upstream`:
+
+```bash
+git apply --check ../patches/qemu-rtd2841-complete.patch
+git apply ../patches/qemu-rtd2841-complete.patch
+mkdir build
+cd build
+../configure --target-list=aarch64-softmmu --enable-slirp \
+    --disable-werror --disable-docs --disable-tools
+ninja qemu-system-aarch64
+cd ../..
+./qemu-upstream/build/qemu-system-aarch64 -M help | grep rtd2841
+```
+
+The final command must list `rtd2841-tv030`. The executable is named
+`qemu-system-aarch64` because it models Cortex-A53 hardware; the TV guest
+still runs ARM32/AArch32 code. A system-installed QEMU without this patch
+does not provide the RTD2841 machine.
+
+### 4. Build the diagnostics and device tree
+
+From the `qemu-rtd2841` directory:
+
+```bash
+make -C tests clean
+make -C tests
+dtc -I dts -O dtb -o dts/rtd284x-tv030.dtb dts/rtd284x-tv030.dts
+```
+
+The Makefile assembles the ARM32 test payloads from their `.s` source files.
+The device tree describes the `tv030` board to the guest. The repository has
+checked-in test binaries and a DTB, but the runner does not rebuild them.
+The `clean` step ensures the diagnostics used here match their source.
+
+### 5. Run the public hardware tests
+
+```bash
+QEMU_BIN="$PWD/qemu-upstream/build/qemu-system-aarch64" \
+    python3 tests/run_ci_test.py
+```
+
+Tier 1 checks the CPU, interrupt controller, timer, SDHCI, and Ethernet
+model. Tier 2 attaches a temporary synthetic disk and checks card detection.
+On a fresh clone, Tier 3 prints a **skip notice** because the vendor kernel
+and firmware disk are absent. A final `ALL CI HARDWARE AUTOMATION TESTS
+PASSED` message therefore means the available tiers passed; it is not an
+Android boot result.
+
+To open the bare-metal framebuffer test on macOS after the build:
+
+```bash
+QEMU_BIN="$PWD/qemu-upstream/build/qemu-system-aarch64" \
+    DISPLAY_BACKEND=cocoa ./scripts/run_qemu.sh tests/firmware_fb_test.bin
+```
+
+The interactive image is a diagnostic dashboard, not Android TV.
+
+### Optional: local Linux firmware test
+
+Tier 3 needs a **compatible** RTD2841 Linux `zImage` and a composite eMMC
+image with the expected root and vendor partitions. Those proprietary assets
+are not distributed here. An OTA archive alone is not a bootable input; the
+original Android root `/init` has not been recovered from the encrypted boot
+payload. If you already have prepared assets, install `qemu-img` (`qemu-utils`
+on Ubuntu or `qemu` through Homebrew), then run:
+
+```bash
+QEMU_BIN="$PWD/qemu-upstream/build/qemu-system-aarch64" \
+KERNEL_BIN="/absolute/path/to/zImage" \
+STORAGE_IMAGE="/absolute/path/to/emmc.raw" \
+QEMU_IMG="/absolute/path/to/qemu-img" \
 python3 tests/run_ci_test.py
-
-# Run standalone bare-metal diagnostic test (CPU, GIC, TC0, SDHCI, RTL8168 MMIO)
-./scripts/run_qemu.sh tests/firmware_test.bin
-
-# Run with 1080p display (Cocoa on macOS, or VNC)
-DISPLAY_BACKEND=cocoa ./scripts/run_qemu.sh tests/firmware_fb_test.bin
 ```
 
-Diagnostic run output:
-```text
-========================================================
-[RTD2841-TV030] Bare-Metal Hardware Diagnostic Suite
-Target: Realtek RTD2841 / TCL RT41 Chassis (tv030)
-========================================================
-[PASS] CPU 0: ARM Cortex-A53 executing in AArch32 Mode.
-[PASS] GIC-400 Distributor (0x18081000): GICD_TYPER=0x00000067 (256 INTIDs verified).
-[PASS] TC0 Timer (0x1801B600): Active up-count verified (T0=0x000001CB, T1=0x00000546 @ 27MHz).
-[PASS] SDHCI eMMC (0x18010800): Controller online (CAPAREG=0x057834B4, no card; optional: attach -drive file=storage.img,if=sd).
-[PASS] RTL8168 Ethernet (0x18016000): Controller online (TXCFG=0x50900800, PHYSTATUS=0x00000013, link UP).
-========================================================
-[>>> ALL HARDWARE SUBSYSTEM VERIFICATION TESTS PASSED <<<]
-========================================================
-```
-
----
+The runner creates a temporary qcow2 overlay so the reference eMMC image is
+not written by this test. The public tiers still run first. Tier 3 verifies
+Linux boot and network access; it does not verify a complete Android TV UI.
 
 ## What's Implemented
 
@@ -116,36 +219,10 @@ See [HARDWARE_FIDELITY.md](HARDWARE_FIDELITY.md) for register layout notes and k
 
 ## Building QEMU with RTD2841 Support
 
-### 1. Dependencies
-
-- **macOS**: `brew install ninja meson pkg-config glib pixman dtc python3`
-- **Debian / Ubuntu**: `sudo apt install build-essential git ninja-build meson pkg-config libglib2.0-dev libpixman-1-dev device-tree-compiler python3`
-- **Fedora / RHEL**: `sudo dnf install git ninja-build meson gcc pkgconf-pkg-config glib2-devel pixman-devel dtc python3`
-
-### 2. Apply Patch & Build
-
-```bash
-git clone https://gitlab.com/qemu-project/qemu.git
-cd qemu
-
-# Checkout verified baseline (or v9.1.0+)
-git checkout a19f59a72d96056d9a8f48cf6c77f5787491e414
-
-# Apply the model patch
-git apply /path/to/qemu-rtd2841/patches/qemu-rtd2841-complete.patch
-
-# Build
-mkdir build && cd build
-../configure --target-list=aarch64-softmmu --disable-werror
-ninja qemu-system-aarch64
-```
-
-Verify the machine is registered:
-```bash
-./qemu-system-aarch64 -M help | grep rtd2841
-# rtd2841              Realtek RTD2841 SoC / TCL Smart TV (board tv030) (alias of rtd2841-tv030)
-# rtd2841-tv030        Realtek RTD2841 SoC / TCL Smart TV (board tv030)
-```
+Use the pinned source revision, patch check, build flags, and verification
+command in [Run it on a new computer](#run-it-on-a-new-computer). The pinned
+revision is the one exercised by public CI; compatibility with an arbitrary
+QEMU release has not been established.
 
 ---
 
