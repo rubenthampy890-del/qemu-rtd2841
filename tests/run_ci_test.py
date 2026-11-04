@@ -47,6 +47,7 @@ def find_kernel():
     if "KERNEL_BIN" in os.environ and os.path.isfile(os.environ["KERNEL_BIN"]):
         return os.environ["KERNEL_BIN"]
     cands = [
+        os.path.join(REPO_ROOT, "build/phase3/kernel-smp-sdhci-20261026T141826Z/zImage"),
         os.path.join(REPO_ROOT, "output/kernel/zImage"),
         os.path.join(REPO_ROOT, "../tcl-firmware-re/output/kernel/zImage"),
     ]

@@ -267,6 +267,48 @@ def build_system_image(workspace_root):
     return system_img, size_bytes
 
 
+def build_userdata_image(workspace_root):
+    staging_dir = os.path.join(workspace_root, "staging")
+    userdata_img = os.path.join(staging_dir, "userdata.img")
+    mke2fs_bin = find_tool("mke2fs")
+    debugfs_bin = find_tool("debugfs")
+
+    size_mb = 510  # 510 MiB, LBA 7342080..8386559
+    size_bytes = size_mb * 1024 * 1024
+
+    print(f"\n========================================================")
+    print(f"[*] Stage 2.5: Building userdata.img ({size_mb} MiB ext4)")
+    print(f"========================================================")
+
+    if not os.path.isfile(userdata_img) or os.path.getsize(userdata_img) != size_bytes:
+        with open(userdata_img, "wb") as f:
+            f.truncate(size_bytes)
+
+        cmd = [
+            mke2fs_bin,
+            "-t", "ext4",
+            "-F",
+            "-L", "userdata",
+            "-b", "4096",
+            "-I", "256",
+            userdata_img
+        ]
+        run_cmd(cmd)
+
+        cmd_file = os.path.join(staging_dir, "userdata_debugfs_cmds.tmp")
+        with open(cmd_file, "w", encoding="utf-8") as f:
+            f.write("mkdir local\n")
+            f.write("mkdir local/tmp\n")
+            f.write("set_inode_field local/tmp mode 040777\n")
+            f.write("ea_set local/tmp security.selinux u:object_r:shell_data_file:s0\n")
+        run_cmd([debugfs_bin, "-w", "-f", cmd_file, userdata_img])
+        if os.path.exists(cmd_file):
+            os.remove(cmd_file)
+
+    print(f"[+] userdata.img created and verified successfully ({size_bytes} bytes).")
+    return userdata_img, size_bytes
+
+
 def build_vendor_image(workspace_root):
     staging_dir = os.path.join(workspace_root, "staging")
     vendor_tar = os.path.join(staging_dir, "update_root", "vendor.tar")
@@ -555,7 +597,7 @@ def create_gpt_structures(total_sectors, partitions):
     }
 
 
-def build_composite_emmc(workspace_root, system_img, vendor_img, output_path=None):
+def build_composite_emmc(workspace_root, system_img, vendor_img, userdata_img=None, output_path=None):
     staging_dir = os.path.join(workspace_root, "staging")
     if output_path:
         emmc_raw = os.path.abspath(output_path)
@@ -563,6 +605,11 @@ def build_composite_emmc(workspace_root, system_img, vendor_img, output_path=Non
             emmc_raw = os.path.join(emmc_raw, "storage.img")
     else:
         emmc_raw = os.path.join(staging_dir, "emmc.raw")
+
+    if not userdata_img:
+        candidate_userdata = os.path.join(staging_dir, "userdata.img")
+        if os.path.isfile(candidate_userdata):
+            userdata_img = candidate_userdata
 
     # 4 GiB eMMC geometry (matches part_targetM=4096 and QEMU SDHC requirements)
     total_size_mb = 4096
@@ -581,6 +628,7 @@ def build_composite_emmc(workspace_root, system_img, vendor_img, output_path=Non
     # LBA 2..33: Primary Table
     # LBA 2048: Partition 1 (system, 2048 MiB)
     # LBA 4196352: Partition 2 (vendor, 1536 MiB)
+    # LBA 7342080: Partition 3 (userdata, 510 MiB)
     sys_start_lba = 2048
     sys_end_lba = sys_start_lba + system_sectors - 1
 
@@ -612,6 +660,23 @@ def build_composite_emmc(workspace_root, system_img, vendor_img, output_path=Non
             "attributes": 0
         }
     ]
+
+    userdata_sectors = 0
+    data_start_lba = 0
+    if userdata_img and os.path.isfile(userdata_img):
+        userdata_size = os.path.getsize(userdata_img)
+        userdata_sectors = userdata_size // SECTOR_SIZE
+        data_start_lba = ven_end_lba + 1
+        data_end_lba = data_start_lba + userdata_sectors - 1
+        print(f"Partition 3 (userdata): LBA {data_start_lba}..{data_end_lba} ({userdata_size // (1024*1024)} MiB)")
+        partitions.append({
+            "name": "userdata",
+            "type_guid": LINUX_FS_DATA_GUID,
+            "unique_guid": uuid.uuid4(),
+            "start_lba": data_start_lba,
+            "end_lba": data_end_lba,
+            "attributes": 0
+        })
 
     gpt = create_gpt_structures(total_sectors, partitions)
 
@@ -647,6 +712,14 @@ def build_composite_emmc(workspace_root, system_img, vendor_img, output_path=Non
         with open(vendor_img, "rb") as v_in:
             while chunk := v_in.read(16 * 1024 * 1024):
                 f.write(chunk)
+
+        # 5.5. Stream userdata.img at data_start_lba
+        if userdata_img and os.path.isfile(userdata_img):
+            print(f"[*] Streaming userdata.img into emmc.raw at offset {data_start_lba * SECTOR_SIZE}...")
+            f.seek(data_start_lba * SECTOR_SIZE)
+            with open(userdata_img, "rb") as u_in:
+                while chunk := u_in.read(16 * 1024 * 1024):
+                    f.write(chunk)
 
         # 6. LBA backup_entries_lba: Backup Partition Table
         f.seek(gpt["backup_entries_lba"] * SECTOR_SIZE)
@@ -726,6 +799,14 @@ def verify_emmc_raw(emmc_raw):
         assert p1_name == "system", f"Expected partition 1 name 'system', got '{p1_name}'"
         assert p2_name == "vendor", f"Expected partition 2 name 'vendor', got '{p2_name}'"
 
+        p3_type = uuid.UUID(bytes_le=entries_buf[256:272])
+        p3_start, p3_end = struct.unpack_from("<QQ", entries_buf, 288)
+        p3_name = entries_buf[312:384].decode("utf-16le").rstrip("\x00")
+        has_p3 = (p3_name == "userdata")
+        if has_p3:
+            print(f"[+] Partition 3: name='{p3_name}' type={p3_type} LBA={p3_start}..{p3_end} ({((p3_end - p3_start + 1) * 512)/(1024*1024):.1f} MiB)")
+            assert p3_name == "userdata", f"Expected partition 3 name 'userdata', got '{p3_name}'"
+
         # Verify Secondary GPT Header
         f.seek((total_sectors - 1) * SECTOR_SIZE)
         sec_hdr = f.read(512)
@@ -738,7 +819,11 @@ def verify_emmc_raw(emmc_raw):
         print(f"[+] Secondary GPT Header verified at LBA {total_sectors - 1} (CRC32: {hex(calc_sec_crc)} matches).")
 
         # Verify ext4 superblocks inside emmc.raw directly
-        for name, start_lba in [("system", p1_start), ("vendor", p2_start)]:
+        partitions_to_check = [("system", p1_start), ("vendor", p2_start)]
+        if has_p3:
+            partitions_to_check.append(("userdata", p3_start))
+
+        for name, start_lba in partitions_to_check:
             sb_offset = (start_lba * SECTOR_SIZE) + 1024
             f.seek(sb_offset)
             sb_data = f.read(1024)
@@ -775,7 +860,9 @@ def main():
 
     system_img, _ = build_system_image(workspace_root)
     vendor_img, _ = build_vendor_image(workspace_root)
-    emmc_raw, partitions, gpt = build_composite_emmc(workspace_root, system_img, vendor_img, output_path=output_path)
+    userdata_img, _ = build_userdata_image(workspace_root)
+    emmc_raw, partitions, gpt = build_composite_emmc(workspace_root, system_img, vendor_img, userdata_img=userdata_img, output_path=output_path)
+    verify_emmc_raw(emmc_raw)
     verify_emmc_raw(emmc_raw)
 
 

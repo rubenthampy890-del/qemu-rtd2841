@@ -26,7 +26,7 @@ Platform peripherals are categorized into four implementation tiers:
 | **SYSREG / Clocks** | `0x18000400` | 3 KB | N/A | **Unimplemented** | Returns 0. Fixed clock frequencies provided directly by Device Tree. |
 | **Mali GPU** | `0x18040000` | 16 KB | SPI 26/27/14 (INTID 58/59/46) | **Unimplemented** | Returns 0. Hardware 3D graphics acceleration not implemented. Interrupts configured as 3-cell SPI 26 (JOB), SPI 27 (MMU), SPI 14 (GPU). |
 | **Audio DSP / ADMA** | `0x18006600` | 4 KB | SPI 5 (INTID 37) | **Unimplemented** | Returns 0. Audio DSP and ADMA ring buffers not implemented. |
-| **IR Remote Decoder** | `0x18061400` | 256 B | SPI 25 (INTID 57) | **Unimplemented** | Returns 0. Hardware IR receiver peripheral not implemented. |
+| **IR Remote Receiver** | `0x18061400` (IRDA)<br>`0x18061000` (ISO_MISC) | 512 B<br>32 B | SPI 25 (INTID 57, shared w/ UART0 via OR gate) | **Custom Model** | **Fully Verified**: `hw/arm/rtd2841_ir.c`: Decoded codeword injection and register state machine (not raw pulse/carrier timing simulation). 32-entry FIFO, packet ownership latching (`rp_unread`), receiver enable gating (`CR`/`CR_RC5_RC6`), interrupt masking (`CR` bit 10), and `ISO_MISC_ISR` bit 5 aggregation onto GIC INTID 57 with UART0 via `TYPE_OR_IRQ`. Verified in Linux 4.4 kernel and userspace: `mtkinp` driver initialization (`/dev/input/event0`), QMP `rtd2841-ir-inject` and HMP `ir_inject` scancode delivery (`0x0B` ENTER, `0xA6` UP) decoded as RCA codewords in kernel dmesg and delivered as `EV_KEY` events to userspace `getevent`. |
 | **ARM TSG** | `0x1805C800` | 256 B | N/A | **Unimplemented** | Returns 0. Time-stamping generator registers return 0 safely. |
 | **SCU Control** | `0x18080000` | 4 KB | N/A | **Unimplemented** | Returns 0. CPU SMP coherency managed directly in software. |
 
@@ -109,7 +109,7 @@ To provide transparent validation boundaries for continuous integration and exte
   - SPI 0 (INTID 32): Hardware Watchdog (`IRQ_WDOG`)
   - SPI 2 (INTID 34): TC0..TC7 Timers (`IRQ_TIMER`)
   - SPI 18 (INTID 50): eMMC Controller (`IRQ_EMMC`)
-  - SPI 25 (INTID 57): UART0 (`IRQ_UART0`)
+  - SPI 25 (INTID 57): UART0 & IR Remote (`IRQ_UART0` / `Venus_IR` aggregated via `TYPE_OR_IRQ`)
 
 ---
 
@@ -235,4 +235,27 @@ To provide transparent validation boundaries for continuous integration and exte
   - `0xE4..0xEB`: `RxAddrHigh`/`RxAddrLow` (RX Descriptor Ring physical base)
 - **DMA Engine**: Direct physical memory access via `&address_space_memory` with circular descriptor ring ownership management (bit 31 `OWN`).
 - **QEMU Backend**: Backed by QEMU SLIRP user network (`-nic user,model=rtd2841-eth`) with host port forwarding (`hostfwd=tcp::5555-:5555`).
+
+---
+
+## Realtek IR Remote Receiver (IRDA & ISO_MISC)
+
+- **Base Addresses**:
+  - IRDA Core: `0x18061400` (512 B aperture on RBUS)
+  - ISO_MISC Interrupt Controller: `0x18061000` (32 B aperture on RBUS)
+- **Interrupt**: SPI 25 -> GIC INTID 57 (shared with 16550A UART0 via `TYPE_OR_IRQ` gate)
+- **Fidelity Scope & Boundary**:
+  - **Decoded Codeword Simulation**: The model emulates the digital register interface, packet FIFO, and interrupt status/mask logic of the Realtek IR controller. It accepts pre-decoded 24-bit RCA / NEC scancodes (injected via QMP command `rtd2841-ir-inject` or HMP command `ir_inject`).
+  - **Exclusions**: The analog pulse timing registers (`REG_IRDA_PER` at `+0x04`, `REG_IRDA_SF` at `+0x08`, etc.) store configured timing thresholds but the model does not simulate raw microsecond photodiode pulse-width waveforms or carrier demodulation.
+- **Hardware Architecture & State Machine**:
+  - `REG_IRDA_CR` (`+0x10`): Main0 decoder enable (bit 8), hardware IRQ enable (bit 10), soft reset (bit 0).
+  - `REG_IRDA_CR_RC5_RC6` (`+0xB0`): Main1 decoder enable (bit 0, used by TCL tv030 RCA protocol).
+  - `REG_IRDA_SR` (`+0x14`): Status register. Bit 0 indicates packet available (`IRDVF`). Write-1-to-clear handshake (`SR=3`) clears IRDVF. Bit 9 indicates FIFO overflow.
+  - `REG_IRDA_RP` (`+0x20`): Received packet register holding the 24-bit codeword (`scancode | (~scancode << 12)`).
+  - **Packet Latching (`rp_unread`)**: Latching state ensures that when the driver acknowledges arrival (`SR=3`) before reading `REG_IRDA_RP`, subsequent packet injections are buffered in the 32-entry FIFO rather than overwriting `RP`. Reading `REG_IRDA_RP` unlatches the register and pops the next FIFO entry.
+  - **Interrupt Aggregation**: `ISO_MISC_ISR` (`0x18061000`) bit 5 reflects IR interrupt pending. IRQ line is gated on `(rx_enabled && irq_enabled && pending)`. Shared GIC INTID 57 is driven via `TYPE_OR_IRQ` alongside UART0, ensuring neither peripheral lowers an active interrupt of the other.
+- **Verification Evidence**:
+  - QTest register audit (`artifacts/audits/ir-20261107-codex/register_audit.py`): verified disabled packet rejection, timing alias removal, FIFO ordering across acknowledge-then-read, burst overflow status (`SR` bit 9), and OR-gate multi-source independence.
+  - Full-stack Linux verification (`tests/test_ir_inject.py`): verified kernel `mtkinp` driver registration, dmesg scancode decoding (`0x0B` and `0xA6`), and userspace `getevent` delivery on `/dev/input/event0` (`KEY_ENTER` and `KEY_UP`).
+
 

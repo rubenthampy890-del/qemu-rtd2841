@@ -89,6 +89,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(RTD2841EthState, RTD2841_ETH)
 
 DeviceState *rtd2841_timer_create(hwaddr base, qemu_irq irq);
 DeviceState *rtd2841_wdog_create(hwaddr base);
+
+#define TYPE_RTD2841_IR "rtd2841-ir"
+#define RTD2841_IR_BASE             0x18061400ULL
+#define RTD2841_IR_SIZE             0x00000200ULL           /* 512 B IRDA */
+#define RTD2841_ISO_MISC_BASE       0x18061000ULL
+#define RTD2841_ISO_MISC_SIZE       0x00000020ULL           /* 32 B ISO_MISC */
+
+DeviceState *rtd2841_ir_create(hwaddr irda_base, hwaddr iso_misc_base, qemu_irq irq);
+void rtd2841_ir_inject_scancode(DeviceState *dev, uint32_t scancode);
 #define RTD2841_GPU_BASE            0x18040000ULL
 #define RTD2841_GPU_SIZE            0x00004000ULL           /* 16 KB GPU */
 #define RTD2841_ARM_TSG_BASE        0x1805C800ULL
@@ -184,6 +193,7 @@ struct RTD2841SocState {
     ARMCPU cpu[RTD2841_NUM_CPUS];
     GICState gic;
     RTD2841EthState eth;
+    DeviceState *ir;
 };
 
 struct RTD2841MachineState {

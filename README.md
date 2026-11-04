@@ -147,8 +147,21 @@ The interactive image is a diagnostic dashboard, not Android TV.
 
 ### Optional: local Linux firmware test
 
+TCL publishes the [RTD2841 Linux kernel source](https://github.com/TCLOpenSource/rtk2841).
+Its [kernel source index](https://github.com/TCLOpenSource/TCL_Kernel_OpenSource)
+lists the `40S6500` family with Android P and Linux 4.4.3. This is source
+code, not a ready-to-boot `zImage` or an Android firmware image. A kernel
+built from it still needs the correct board configuration and device tree.
+
+For TV firmware, start with [TCL support for the 40S6500](https://www.tcl.com/global/en/support/model/40s6500)
+and check the exact model, chassis, and regional build before using any
+download. We have not verified a direct firmware download for this build on
+that page. The complete firmware contains components with separate licenses;
+do not assume that the kernel's GPL license covers the Android and vendor
+files inside it. This repository does not redistribute the firmware.
+
 Tier 3 needs a **compatible** RTD2841 Linux `zImage` and a composite eMMC
-image with the expected root and vendor partitions. Those proprietary assets
+image with the expected root and vendor partitions. These prepared boot assets
 are not distributed here. An OTA archive alone is not a bootable input; the
 original Android root `/init` has not been recovered from the encrypted boot
 payload. If you already have prepared assets, install `qemu-img` (`qemu-utils`

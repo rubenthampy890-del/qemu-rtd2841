@@ -1,8 +1,32 @@
+diff --git a/hmp-commands.hx b/hmp-commands.hx
+index f0b8d89..758aa3b 100644
+--- a/hmp-commands.hx
++++ b/hmp-commands.hx
+@@ -637,6 +637,19 @@ SRST
+   This command is useful to send keys that your graphical user interface
+   intercepts at low level, such as ``ctrl-alt-f1`` in X Window.
+ ERST
++
++    {
++        .name       = "rtd2841_ir_inject|ir_inject",
++        .args_type  = "scancode:i",
++        .params     = "scancode",
++        .help       = "inject IR remote scancode into RTD2841 IR receiver FIFO",
++        .cmd        = hmp_rtd2841_ir_inject,
++    },
++
++SRST
++``rtd2841_ir_inject`` *scancode* or ``ir_inject`` *scancode*
++  Inject IR remote scancode into the RTD2841 IR receiver FIFO.
++ERST
+     {
+         .name       = "sync-profile",
+         .args_type  = "op:s?",
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 4445f16..9682a8b 100644
+index 4445f16..6ea4880 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -731,3 +731,14 @@ config AXIADO_EVK
+@@ -731,3 +731,15 @@ config AXIADO_EVK
      default y
      depends on TCG && ARM
      select AXIADO_SOC
@@ -17,23 +41,25 @@ index 4445f16..9682a8b 100644
 +    select UNIMP
 +    select PTIMER
 +    select SDHCI
++    select OR_IRQ
 diff --git a/hw/arm/meson.build b/hw/arm/meson.build
-index bcc068d..ed08c03 100644
+index bcc068d..59086e4 100644
 --- a/hw/arm/meson.build
 +++ b/hw/arm/meson.build
 @@ -34,6 +34,7 @@ arm_common_ss.add(when: 'CONFIG_RASPI', if_true: files(
  arm_common_ss.add(when: 'CONFIG_STM32F100_SOC', if_true: files('stm32f100_soc.c'))
  arm_common_ss.add(when: 'CONFIG_STM32F205_SOC', if_true: files('stm32f205_soc.c'))
  arm_common_ss.add(when: 'CONFIG_STM32F405_SOC', if_true: files('stm32f405_soc.c'))
-+arm_common_ss.add(when: 'CONFIG_RTD2841', if_true: files('rtd2841.c', 'rtd2841_timer.c'))
++arm_common_ss.add(when: 'CONFIG_RTD2841', if_true: files('rtd2841.c', 'rtd2841_timer.c', 'rtd2841_ir.c'))
  arm_common_ss.add(when: 'CONFIG_B_L475E_IOT01A', if_true: files('b-l475e-iot01a.c'))
  arm_common_ss.add(when: 'CONFIG_STM32L4X5_SOC', if_true: files('stm32l4x5_soc.c'))
  arm_common_ss.add(when: 'CONFIG_XLNX_ZYNQMP_ARM', if_true: files('xlnx-zynqmp.c', 'xlnx-zcu102.c'))
 diff --git a/hw/arm/rtd2841.c b/hw/arm/rtd2841.c
 new file mode 100644
+index 0000000..8363a23
 --- /dev/null
 +++ b/hw/arm/rtd2841.c
-@@ -0,0 +1,1142 @@
+@@ -0,0 +1,1192 @@
 +/*
 + * Realtek RTD2841 SoC & TCL Smart TV Board Model (tv030)
 + *
@@ -82,6 +108,7 @@ new file mode 100644
 +#endif
 +#include "hw/sd/sdhci.h"
 +#include "hw/sd/sd.h"
++#include "hw/core/or-irq.h"
 +#include "ui/input.h"
 +#include "hw/core/irq.h"
 +#include "net/net.h"
@@ -883,12 +910,23 @@ new file mode 100644
 +                RTD2841_GIC_PPI_TO_GPIO(i, RTD2841_IRQ_PPI_SEC_PHYS_TIMER)));
 +    }
 +
++    /*
++     * Shared GIC INTID 57 (SPI 25): OR gate for UART0 and IR receiver.
++     * Both UART0 (0x18062300) and IR (0x18061400) assert GIC INTID 57.
++     * Using TYPE_OR_IRQ ensures neither clobbers the other.
++     */
++    DeviceState *uart_ir_orgate = qdev_new(TYPE_OR_IRQ);
++    qdev_prop_set_uint16(uart_ir_orgate, "num-lines", 2);
++    qdev_realize_and_unref(uart_ir_orgate, NULL, &error_fatal);
++    qdev_connect_gpio_out(uart_ir_orgate, 0,
++                          qdev_get_gpio_in(gicdev,
++                              RTD2841_GIC_SPI_TO_GPIO(RTD2841_UART0_SPI)));
++
 +    /* 16550A UART0 @ 0x18062300, 27MHz clock, 4-byte stride (shift=2) */
 +    serial_mm_init(get_system_memory(),
 +                   RTD2841_UART0_BASE,
 +                   RTD2841_UART0_REG_SHIFT,
-+                   qdev_get_gpio_in(gicdev,
-+                       RTD2841_GIC_SPI_TO_GPIO(RTD2841_UART0_SPI)),
++                   qdev_get_gpio_in(uart_ir_orgate, 0),
 +                   RTD2841_UART0_BAUDBASE,
 +                   serial_hd(0),
 +                   DEVICE_LITTLE_ENDIAN);
@@ -950,6 +988,11 @@ new file mode 100644
 +    create_unimplemented_device("rtd2841.arm_tsg",
 +                                RTD2841_ARM_TSG_BASE, RTD2841_ARM_TSG_SIZE);
 +    rtd2841_wdog_create(RTD2841_WDOG_BASE);
++
++    /* Realtek IR Receiver Controller @ 0x18061400 / 0x18061000 */
++    s->ir = rtd2841_ir_create(RTD2841_IR_BASE, RTD2841_ISO_MISC_BASE,
++                              qdev_get_gpio_in(uart_ir_orgate, 1));
++
 +    create_unimplemented_device("rtd2841.scu",
 +                                RTD2841_SCU_BASE, RTD2841_SCU_SIZE);
 +}
@@ -1003,7 +1046,6 @@ new file mode 100644
 +static void rtd2841_kbd_event(DeviceState *dev, QemuConsole *src,
 +                              QemuInputEvent *evt)
 +{
-+    (void)dev;
 +    (void)src;
 +    if (evt->type != INPUT_EVENT_KIND_KEY) {
 +        return;
@@ -1015,41 +1057,75 @@ new file mode 100644
 +    int qcode = qemu_input_linux_to_qcode(evt->key.key);
 +    char c = 0;
 +    const char *seq = NULL;
++    uint32_t ir_scancode = 0;
 +
 +    switch (qcode) {
-+    case Q_KEY_CODE_1: c = '1'; break;
-+    case Q_KEY_CODE_2: c = '2'; break;
-+    case Q_KEY_CODE_3: c = '3'; break;
-+    case Q_KEY_CODE_4: c = '4'; break;
-+    case Q_KEY_CODE_5: c = '5'; break;
-+    case Q_KEY_CODE_6: c = '6'; break;
++    case Q_KEY_CODE_1: c = '1'; ir_scancode = 0xCE; break;
++    case Q_KEY_CODE_2: c = '2'; ir_scancode = 0xCD; break;
++    case Q_KEY_CODE_3: c = '3'; ir_scancode = 0xCC; break;
++    case Q_KEY_CODE_4: c = '4'; ir_scancode = 0xCB; break;
++    case Q_KEY_CODE_5: c = '5'; ir_scancode = 0xCA; break;
++    case Q_KEY_CODE_6: c = '6'; ir_scancode = 0xC9; break;
++    case Q_KEY_CODE_7: c = '7'; ir_scancode = 0xC8; break;
++    case Q_KEY_CODE_8: c = '8'; ir_scancode = 0xC7; break;
++    case Q_KEY_CODE_9: c = '9'; ir_scancode = 0xC6; break;
++    case Q_KEY_CODE_0: c = '0'; ir_scancode = 0xCF; break;
 +    case Q_KEY_CODE_LEFT:
 +    case Q_KEY_CODE_H:
 +        seq = "\033[D";
++        ir_scancode = 0xA9;
 +        break;
 +    case Q_KEY_CODE_RIGHT:
 +    case Q_KEY_CODE_L:
 +        seq = "\033[C";
++        ir_scancode = 0xA8;
 +        break;
 +    case Q_KEY_CODE_UP:
 +    case Q_KEY_CODE_K:
 +        seq = "\033[A";
++        ir_scancode = 0xA6;
 +        break;
 +    case Q_KEY_CODE_DOWN:
 +    case Q_KEY_CODE_J:
 +        seq = "\033[B";
++        ir_scancode = 0xA7;
 +        break;
 +    case Q_KEY_CODE_RET:
 +    case Q_KEY_CODE_KP_ENTER:
 +        c = '\r';
++        ir_scancode = 0x0B;
 +        break;
 +    case Q_KEY_CODE_B: c = 'b'; break;
 +    case Q_KEY_CODE_T: c = 't'; break;
 +    case Q_KEY_CODE_C: c = 'c'; break;
 +    case Q_KEY_CODE_Q: c = 'q'; break;
-+    case Q_KEY_CODE_BACKSPACE: c = 0x7f; break;
++    case Q_KEY_CODE_M: c = 'm'; ir_scancode = 0xC0; break;
++    case Q_KEY_CODE_F10: ir_scancode = 0xD0; break;
++    case Q_KEY_CODE_F9: ir_scancode = 0xD1; break;
++    case Q_KEY_CODE_HOME: ir_scancode = 0xF7; break;
++    case Q_KEY_CODE_TAB: ir_scancode = 0x13; break;
++    case Q_KEY_CODE_ESC: ir_scancode = 0xD8; break;
++    case Q_KEY_CODE_POWER: ir_scancode = 0xD5; break;
++    case Q_KEY_CODE_BACKSPACE: c = 0x7f; ir_scancode = 0xD8; break;
 +    default:
 +        break;
++    }
++
++    if (ir_scancode != 0) {
++        DeviceState *ir_dev = NULL;
++        if (dev) {
++            RTD2841SocState *soc = RTD2841_SOC(dev);
++            ir_dev = soc->ir;
++        }
++        if (!ir_dev) {
++            Object *ir_obj = object_resolve_path_type("", TYPE_RTD2841_IR, NULL);
++            if (ir_obj) {
++                ir_dev = DEVICE(ir_obj);
++            }
++        }
++        if (ir_dev) {
++            rtd2841_ir_inject_scancode(ir_dev, ir_scancode);
++        }
 +    }
 +
 +    Chardev *chr = serial_hd(0);
@@ -1109,8 +1185,8 @@ new file mode 100644
 +        dpy_gfx_replace_surface(ms->console, surface);
 +    }
 +
-+    /* Direct key events to UART console */
-+    (void)qemu_input_handler_register(NULL, &rtd2841_kbd_handler);
++    /* Direct key events to UART console & IR receiver */
++    (void)qemu_input_handler_register(DEVICE(&ms->soc), &rtd2841_kbd_handler);
 +
 +    ms->boot_info.ram_size = machine->ram_size;
 +    ms->boot_info.board_id = -1;
@@ -1176,6 +1252,704 @@ new file mode 100644
 +};
 +
 +DEFINE_TYPES(rtd2841_types)
+diff --git a/hw/arm/rtd2841_ir.c b/hw/arm/rtd2841_ir.c
+new file mode 100644
+index 0000000..8f1cbf7
+--- /dev/null
++++ b/hw/arm/rtd2841_ir.c
+@@ -0,0 +1,692 @@
++/*
++ * Realtek RTD2841 IR Receiver Peripheral Model
++ *
++ * Implements the Realtek IRDA pulse decoder and status interface:
++ * - MMIO window 0 at 0x18061400 (Control, Data, Payload, Status, Pulse config)
++ * - MMIO window 1 at 0x18061000 (ISO_MISC_ISR bit 5 irda_int, ISO_MISC_SYSTEM)
++ * - Hardware FIFO of depth 32 for raw and auto-formatted RCA codewords
++ * - Dynamic scancode injection via QOM property and HMP/QMP commands
++ *
++ * Target: TCL Smart TV RT41 Chassis (profile tv030)
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qapi/visitor.h"
++#include "qemu/log.h"
++#include "qemu/module.h"
++#include "hw/core/sysbus.h"
++#include "hw/core/irq.h"
++#include "migration/vmstate.h"
++
++#if defined(QEMU_IN_TREE) || __has_include("hw/arm/rtd2841.h")
++#include "hw/arm/rtd2841.h"
++#else
++#include "rtd2841.h"
++#endif
++
++#define RTD2841_IR_FIFO_SIZE        32
++#define RTD2841_IR_MMIO_SIZE        0x00000200ULL /* 512 B */
++#define RTD2841_ISO_MISC_MMIO_SIZE  0x00000020ULL /* 32 B */
++
++/* Register offsets in IRDA window (0x18061400) */
++#define REG_IRDA_PSR                0x00
++#define REG_IRDA_PER                0x04
++#define REG_IRDA_SF                 0x08
++#define REG_IRDA_DPIR               0x0C
++#define REG_IRDA_CR                 0x10
++#define REG_IRDA_RP                 0x14
++#define REG_IRDA_SR                 0x18
++#define REG_IRDA_PSR_UP             0x30
++#define REG_IRDA_PER_UP             0x34
++#define REG_IRDA_CTRL_RC6           0x38
++#define REG_IRDA_RP2                0x3C
++#define REG_IRDA_EXT_RP_CF          0x44
++#define REG_IRDA_EXT_RP_TIMING      0x48
++#define REG_IRDA_EXT_RP_TIMING_UP   0x4C
++#define REG_IRDA_HW_DECODE_SEL      0x50
++#define REG_IRDA_HW_DECODE_READ     0x54
++#define REG_IRDA_MASK_DATA_READ     0x58
++#define REG_IRDA_HW_DECODE_DATA     0x5C
++#define REG_IRDA_MASK_DATA          0x60
++#define REG_IRDA_INT_CTRL           0x64
++#define REG_IRDA_INT_CTRL1          0x68
++#define REG_IRDA_COMP_TEST_MODE     0x6C
++#define REG_IRDA_COMP_TEST_DATA7_L  0x70
++#define REG_IRDA_COMP_TEST_DATA7_H  0x74
++#define REG_IRDA_COMP_TEST_SEL      0x78
++#define REG_IRDA_PSR_RC5_RC6        0xA0
++#define REG_IRDA_PER_RC5_RC6        0xA4
++#define REG_IRDA_PSR_UP_RC5_RC6     0xA8
++#define REG_IRDA_PER_UP_RC5_RC6     0xAC
++#define REG_IRDA_CR_RC5_RC6         0xB0
++#define REG_IRDA_DPIR_RC5_RC6       0xB4
++#define REG_IRDA_RPT_CTRL_RC5_RC6   0xB8
++
++/* Register offsets in ISO_MISC window (0x18061000) */
++#define REG_ISO_MISC_ISR            0x00
++#define REG_ISO_MISC_DBG            0x08
++#define REG_ISO_MISC_SYSTEM         0x0C
++#define REG_ISO_MISC_DDC_CTRL       0x10
++#define REG_ISO_MISC_DUMMY1         0x14
++#define REG_ISO_MISC_DUMMY2         0x18
++
++OBJECT_DECLARE_SIMPLE_TYPE(RTD2841IRState, RTD2841_IR)
++
++struct RTD2841IRState {
++    /*< private >*/
++    SysBusDevice parent_obj;
++    /*< public >*/
++
++    MemoryRegion irda_mmio;
++    MemoryRegion iso_misc_mmio;
++    qemu_irq irq;
++
++    /* IRDA Registers */
++    uint32_t psr;
++    uint32_t per;
++    uint32_t sf;
++    uint32_t dpir;
++    uint32_t cr;
++    uint32_t rp;
++    uint32_t sr;
++    uint32_t psr_up;
++    uint32_t per_up;
++    uint32_t ctrl_rc6;
++    uint32_t rp2;
++    uint32_t ext_rp_cf;
++    uint32_t ext_rp_timing;
++    uint32_t ext_rp_timing_up;
++    uint32_t hw_decode_sel;
++    uint32_t hw_decode_read;
++    uint32_t decode_mask_data_read;
++    uint32_t hw_decode_data;
++    uint32_t decode_mask_data;
++    uint32_t int_ctrl;
++    uint32_t int_ctrl1;
++    uint32_t compare_test_mode;
++    uint32_t compare_test_mode_data7_l;
++    uint32_t compare_test_mode_data7_h;
++    uint32_t compare_test_mode_sel;
++    uint32_t psr_rc5_rc6;
++    uint32_t per_rc5_rc6;
++    uint32_t psr_up_rc5_rc6;
++    uint32_t per_up_rc5_rc6;
++    uint32_t cr_rc5_rc6;
++    uint32_t dpir_rc5_rc6;
++    uint32_t rpt_ctrl_rc5_rc6;
++
++    /* ISO_MISC Registers */
++    uint32_t iso_misc_isr;
++    uint32_t iso_misc_dbg;
++    uint32_t iso_misc_system;
++    uint32_t iso_misc_ddc_ctrl;
++    uint32_t iso_misc_dummy1;
++    uint32_t iso_misc_dummy2;
++
++    /* Internal Hardware FIFO & Packet Ownership */
++    bool rp_unread;
++    uint32_t fifo[RTD2841_IR_FIFO_SIZE];
++    uint32_t fifo_head;
++    uint32_t fifo_tail;
++    uint32_t fifo_count;
++};
++
++static inline bool rtd2841_ir_is_rx_enabled(RTD2841IRState *s)
++{
++    /*
++     * Main0 enabled via CR bit 8 (IRDA_IR_CR_main0_en_mask);
++     * Main1 enabled via CR_RC5_RC6 bit 0 (IRDA_IR_CR_RC5_RC6_main1_en_mask).
++     */
++    return (s->cr_rc5_rc6 & 1) || (s->cr & (1 << 8));
++}
++
++static inline bool rtd2841_ir_is_irq_enabled(RTD2841IRState *s)
++{
++    /*
++     * Hardware decode interrupt enable is in CR bit 10 (IRDA_IR_CR_ir_hwval_ie).
++     */
++    return (s->cr & (1 << 10)) != 0;
++}
++
++static void rtd2841_ir_update_irq(RTD2841IRState *s)
++{
++    bool rx_en = rtd2841_ir_is_rx_enabled(s);
++    bool irq_en = rtd2841_ir_is_irq_enabled(s);
++    bool pending = (s->iso_misc_isr & (1 << 5)) && (s->sr & 1);
++
++    bool level = rx_en && irq_en && pending;
++    qemu_set_irq(s->irq, level ? 1 : 0);
++}
++
++static void rtd2841_ir_check_fifo(RTD2841IRState *s)
++{
++    if (!rtd2841_ir_is_rx_enabled(s)) {
++        return;
++    }
++    if (!s->rp_unread && s->fifo_count > 0) {
++        s->rp = s->fifo[s->fifo_head];
++        s->fifo_head = (s->fifo_head + 1) % RTD2841_IR_FIFO_SIZE;
++        s->fifo_count--;
++        s->rp_unread = true;
++        s->sr |= (1 << 9) | 1; /* Main1 source + IRDVF */
++        s->iso_misc_isr |= (1 << 5); /* ISO_MISC_ISR irda_int */
++        rtd2841_ir_update_irq(s);
++    }
++}
++
++void rtd2841_ir_inject_scancode(DeviceState *dev, uint32_t scancode)
++{
++    RTD2841IRState *s = RTD2841_IR(dev);
++    uint32_t codeword;
++
++    /* Drop scancodes when receiver is disabled */
++    if (!rtd2841_ir_is_rx_enabled(s)) {
++        return;
++    }
++
++    /*
++     * If user supplied a raw single-byte / 12-bit scancode (e.g., 0x0B for KEY_ENTER,
++     * 0xA6 for KEY_UP), format as standard RCA codeword expected by venus_ir_scancode_to_keycode:
++     * ((~((value & 0xfff000) >> 12)) & 0x000fff) == (value & 0x000fff)
++     */
++    if (scancode <= 0x0FFF) {
++        uint32_t b = scancode & 0x0FFF;
++        codeword = ((~b & 0x0FFF) << 12) | b;
++    } else {
++        codeword = scancode;
++    }
++
++    /*
++     * Separate packet storage from acknowledgement state:
++     * If s->rp currently holds an unread packet, new packets must queue into the
++     * FIFO so that subsequent injections never overwrite unread data.
++     */
++    if (s->rp_unread) {
++        if (s->fifo_count < RTD2841_IR_FIFO_SIZE) {
++            s->fifo[s->fifo_tail] = codeword;
++            s->fifo_tail = (s->fifo_tail + 1) % RTD2841_IR_FIFO_SIZE;
++            s->fifo_count++;
++        } else {
++            qemu_log_mask(LOG_GUEST_ERROR, "%s: IR FIFO overflow, dropping 0x%08x\n",
++                          __func__, codeword);
++        }
++    } else {
++        s->rp = codeword;
++        s->rp_unread = true;
++        s->sr |= (1 << 9) | 1; /* Main1 (RCA on tv030) + IRDVF */
++        s->iso_misc_isr |= (1 << 5); /* ISO_MISC_ISR bit 5 irda_int */
++        rtd2841_ir_update_irq(s);
++    }
++}
++
++static void rtd2841_ir_set_inject_scancode(Object *obj, Visitor *v,
++                                           const char *name, void *opaque,
++                                           Error **errp)
++{
++    RTD2841IRState *s = RTD2841_IR(obj);
++    uint32_t val;
++
++    if (!visit_type_uint32(v, name, &val, errp)) {
++        return;
++    }
++    rtd2841_ir_inject_scancode(DEVICE(s), val);
++}
++
++/* ------------------------------------------------------------------ */
++/* IRDA MMIO Window (0x18061400)                                       */
++/* ------------------------------------------------------------------ */
++
++static uint64_t rtd2841_irda_read(void *opaque, hwaddr addr, unsigned size)
++{
++    RTD2841IRState *s = opaque;
++
++    (void)size;
++    switch (addr) {
++    case REG_IRDA_PSR:
++        return s->psr;
++    case REG_IRDA_PER:
++        return s->per;
++    case REG_IRDA_SF:
++        return s->sf;
++    case REG_IRDA_DPIR:
++        return s->dpir;
++    case REG_IRDA_CR:
++        return s->cr;
++    case REG_IRDA_RP:
++        {
++            uint32_t r = s->rp;
++            s->rp_unread = false;
++            rtd2841_ir_check_fifo(s);
++            return r;
++        }
++    case REG_IRDA_SR:
++        return s->sr;
++    case REG_IRDA_PSR_UP:
++        return s->psr_up;
++    case REG_IRDA_PER_UP:
++        return s->per_up;
++    case REG_IRDA_CTRL_RC6:
++        return s->ctrl_rc6;
++    case REG_IRDA_RP2:
++        return s->rp2;
++    case REG_IRDA_EXT_RP_CF:
++        return s->ext_rp_cf;
++    case REG_IRDA_EXT_RP_TIMING:
++        return s->ext_rp_timing;
++    case REG_IRDA_EXT_RP_TIMING_UP:
++        return s->ext_rp_timing_up;
++    case REG_IRDA_HW_DECODE_SEL:
++        return s->hw_decode_sel;
++    case REG_IRDA_HW_DECODE_READ:
++        return s->hw_decode_read;
++    case REG_IRDA_MASK_DATA_READ:
++        return s->decode_mask_data_read;
++    case REG_IRDA_HW_DECODE_DATA:
++        return s->hw_decode_data;
++    case REG_IRDA_MASK_DATA:
++        return s->decode_mask_data;
++    case REG_IRDA_INT_CTRL:
++        return s->int_ctrl;
++    case REG_IRDA_INT_CTRL1:
++        return s->int_ctrl1;
++    case REG_IRDA_COMP_TEST_MODE:
++        return s->compare_test_mode;
++    case REG_IRDA_COMP_TEST_DATA7_L:
++        return s->compare_test_mode_data7_l;
++    case REG_IRDA_COMP_TEST_DATA7_H:
++        return s->compare_test_mode_data7_h;
++    case REG_IRDA_COMP_TEST_SEL:
++        return s->compare_test_mode_sel;
++    case REG_IRDA_PSR_RC5_RC6:
++        return s->psr_rc5_rc6;
++    case REG_IRDA_PER_RC5_RC6:
++        return s->per_rc5_rc6;
++    case REG_IRDA_PSR_UP_RC5_RC6:
++        return s->psr_up_rc5_rc6;
++    case REG_IRDA_PER_UP_RC5_RC6:
++        return s->per_up_rc5_rc6;
++    case REG_IRDA_CR_RC5_RC6:
++        return s->cr_rc5_rc6;
++    case REG_IRDA_DPIR_RC5_RC6:
++        return s->dpir_rc5_rc6;
++    case REG_IRDA_RPT_CTRL_RC5_RC6:
++        return s->rpt_ctrl_rc5_rc6;
++    default:
++        qemu_log_mask(LOG_UNIMP, "%s: unhandled IRDA register read at 0x%" HWADDR_PRIx "\n",
++                      __func__, addr);
++        return 0;
++    }
++}
++
++static void rtd2841_irda_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
++{
++    RTD2841IRState *s = opaque;
++
++    (void)size;
++    switch (addr) {
++    case REG_IRDA_PSR:
++        s->psr = val;
++        break;
++    case REG_IRDA_PER:
++        s->per = val;
++        break;
++    case REG_IRDA_SF:
++        s->sf = val;
++        break;
++    case REG_IRDA_DPIR:
++        s->dpir = val;
++        break;
++    case REG_IRDA_CR:
++        s->cr = val;
++        rtd2841_ir_check_fifo(s);
++        rtd2841_ir_update_irq(s);
++        break;
++    case REG_IRDA_RP:
++        qemu_log_mask(LOG_GUEST_ERROR, "%s: write to read-only IR_RP: 0x%" PRIx64 "\n",
++                      __func__, val);
++        break;
++    case REG_IRDA_SR:
++        /* Writing bit 0 (or bit 1) clears IRDVF / repeat flag */
++        if (val & 0x01) {
++            s->sr &= ~0x03;
++            s->iso_misc_isr &= ~(1 << 5);
++            rtd2841_ir_update_irq(s);
++        }
++        break;
++    case REG_IRDA_PSR_UP:
++        s->psr_up = val;
++        break;
++    case REG_IRDA_PER_UP:
++        s->per_up = val;
++        break;
++    case REG_IRDA_CTRL_RC6:
++        s->ctrl_rc6 = val;
++        break;
++    case REG_IRDA_RP2:
++        s->rp2 = val;
++        break;
++    case REG_IRDA_EXT_RP_CF:
++        s->ext_rp_cf = val;
++        break;
++    case REG_IRDA_EXT_RP_TIMING:
++        s->ext_rp_timing = val;
++        break;
++    case REG_IRDA_EXT_RP_TIMING_UP:
++        s->ext_rp_timing_up = val;
++        break;
++    case REG_IRDA_HW_DECODE_SEL:
++        s->hw_decode_sel = val;
++        break;
++    case REG_IRDA_HW_DECODE_READ:
++        s->hw_decode_read = val;
++        break;
++    case REG_IRDA_MASK_DATA_READ:
++        s->decode_mask_data_read = val;
++        break;
++    case REG_IRDA_HW_DECODE_DATA:
++        s->hw_decode_data = val;
++        break;
++    case REG_IRDA_MASK_DATA:
++        s->decode_mask_data = val;
++        break;
++    case REG_IRDA_INT_CTRL:
++        s->int_ctrl = val;
++        break;
++    case REG_IRDA_INT_CTRL1:
++        s->int_ctrl1 = val;
++        break;
++    case REG_IRDA_COMP_TEST_MODE:
++        s->compare_test_mode = val;
++        break;
++    case REG_IRDA_COMP_TEST_DATA7_L:
++        s->compare_test_mode_data7_l = val;
++        break;
++    case REG_IRDA_COMP_TEST_DATA7_H:
++        s->compare_test_mode_data7_h = val;
++        break;
++    case REG_IRDA_COMP_TEST_SEL:
++        s->compare_test_mode_sel = val;
++        break;
++    case REG_IRDA_PSR_RC5_RC6:
++        s->psr_rc5_rc6 = val;
++        break;
++    case REG_IRDA_PER_RC5_RC6:
++        s->per_rc5_rc6 = val;
++        break;
++    case REG_IRDA_PSR_UP_RC5_RC6:
++        s->psr_up_rc5_rc6 = val;
++        break;
++    case REG_IRDA_PER_UP_RC5_RC6:
++        s->per_up_rc5_rc6 = val;
++        break;
++    case REG_IRDA_CR_RC5_RC6:
++        s->cr_rc5_rc6 = val;
++        rtd2841_ir_check_fifo(s);
++        rtd2841_ir_update_irq(s);
++        break;
++    case REG_IRDA_DPIR_RC5_RC6:
++        s->dpir_rc5_rc6 = val;
++        break;
++    case REG_IRDA_RPT_CTRL_RC5_RC6:
++        s->rpt_ctrl_rc5_rc6 = val;
++        break;
++    default:
++        qemu_log_mask(LOG_UNIMP, "%s: unhandled IRDA register write at 0x%" HWADDR_PRIx
++                      " val=0x%" PRIx64 "\n", __func__, addr, val);
++        break;
++    }
++}
++
++static const MemoryRegionOps rtd2841_irda_ops = {
++    .read = rtd2841_irda_read,
++    .write = rtd2841_irda_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid = {
++        .min_access_size = 4,
++        .max_access_size = 4,
++    },
++};
++
++/* ------------------------------------------------------------------ */
++/* ISO_MISC MMIO Window (0x18061000)                                  */
++/* ------------------------------------------------------------------ */
++
++static uint64_t rtd2841_iso_misc_read(void *opaque, hwaddr addr, unsigned size)
++{
++    RTD2841IRState *s = opaque;
++
++    (void)size;
++    switch (addr) {
++    case REG_ISO_MISC_ISR:
++        return s->iso_misc_isr;
++    case REG_ISO_MISC_DBG:
++        return s->iso_misc_dbg;
++    case REG_ISO_MISC_SYSTEM:
++        return s->iso_misc_system;
++    case REG_ISO_MISC_DDC_CTRL:
++        return s->iso_misc_ddc_ctrl;
++    case REG_ISO_MISC_DUMMY1:
++        return s->iso_misc_dummy1;
++    case REG_ISO_MISC_DUMMY2:
++        return s->iso_misc_dummy2;
++    default:
++        qemu_log_mask(LOG_UNIMP, "%s: unhandled ISO_MISC register read at 0x%" HWADDR_PRIx "\n",
++                      __func__, addr);
++        return 0;
++    }
++}
++
++static void rtd2841_iso_misc_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
++{
++    RTD2841IRState *s = opaque;
++
++    (void)size;
++    switch (addr) {
++    case REG_ISO_MISC_ISR:
++        /* W1C on bit 5 */
++        if (val & (1 << 5)) {
++            s->iso_misc_isr &= ~(1 << 5);
++            rtd2841_ir_update_irq(s);
++        }
++        break;
++    case REG_ISO_MISC_DBG:
++        s->iso_misc_dbg = val;
++        break;
++    case REG_ISO_MISC_SYSTEM:
++        s->iso_misc_system = val;
++        break;
++    case REG_ISO_MISC_DDC_CTRL:
++        s->iso_misc_ddc_ctrl = val;
++        break;
++    case REG_ISO_MISC_DUMMY1:
++        s->iso_misc_dummy1 = val;
++        break;
++    case REG_ISO_MISC_DUMMY2:
++        s->iso_misc_dummy2 = val;
++        break;
++    default:
++        qemu_log_mask(LOG_UNIMP, "%s: unhandled ISO_MISC register write at 0x%" HWADDR_PRIx
++                      " val=0x%" PRIx64 "\n", __func__, addr, val);
++        break;
++    }
++}
++
++static const MemoryRegionOps rtd2841_iso_misc_ops = {
++    .read = rtd2841_iso_misc_read,
++    .write = rtd2841_iso_misc_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid = {
++        .min_access_size = 4,
++        .max_access_size = 4,
++    },
++};
++
++/* ------------------------------------------------------------------ */
++/* Device Lifecycle & Type Info                                       */
++/* ------------------------------------------------------------------ */
++
++static void rtd2841_ir_reset(DeviceState *dev)
++{
++    RTD2841IRState *s = RTD2841_IR(dev);
++
++    s->psr = 0;
++    s->per = 0;
++    s->sf = 0;
++    s->dpir = 0;
++    s->cr = 0;
++    s->rp = 0;
++    s->sr = 0;
++    s->psr_up = 0;
++    s->per_up = 0;
++    s->ctrl_rc6 = 0;
++    s->rp2 = 0;
++    s->ext_rp_cf = 0;
++    s->ext_rp_timing = 0;
++    s->ext_rp_timing_up = 0;
++    s->hw_decode_sel = 0;
++    s->hw_decode_read = 0;
++    s->decode_mask_data_read = 0;
++    s->hw_decode_data = 0;
++    s->decode_mask_data = 0;
++    s->int_ctrl = 0;
++    s->int_ctrl1 = 0;
++    s->compare_test_mode = 0;
++    s->compare_test_mode_data7_l = 0;
++    s->compare_test_mode_data7_h = 0;
++    s->compare_test_mode_sel = 0;
++    s->psr_rc5_rc6 = 0;
++    s->per_rc5_rc6 = 0;
++    s->psr_up_rc5_rc6 = 0;
++    s->per_up_rc5_rc6 = 0;
++    s->cr_rc5_rc6 = 0;
++    s->dpir_rc5_rc6 = 0;
++    s->rpt_ctrl_rc5_rc6 = 0;
++
++    s->iso_misc_isr = 0;
++    s->iso_misc_dbg = 0;
++    s->iso_misc_system = 0;
++    s->iso_misc_ddc_ctrl = 0;
++    s->iso_misc_dummy1 = 0;
++    s->iso_misc_dummy2 = 0;
++
++    s->rp_unread = false;
++    memset(s->fifo, 0, sizeof(s->fifo));
++    s->fifo_head = 0;
++    s->fifo_tail = 0;
++    s->fifo_count = 0;
++
++    qemu_set_irq(s->irq, 0);
++}
++
++static void rtd2841_ir_init(Object *obj)
++{
++    RTD2841IRState *s = RTD2841_IR(obj);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
++
++    memory_region_init_io(&s->irda_mmio, obj, &rtd2841_irda_ops, s,
++                          "rtd2841.irda", RTD2841_IR_MMIO_SIZE);
++    sysbus_init_mmio(sbd, &s->irda_mmio);
++
++    memory_region_init_io(&s->iso_misc_mmio, obj, &rtd2841_iso_misc_ops, s,
++                          "rtd2841.iso_misc", RTD2841_ISO_MISC_MMIO_SIZE);
++    sysbus_init_mmio(sbd, &s->iso_misc_mmio);
++
++    sysbus_init_irq(sbd, &s->irq);
++
++    object_property_add(obj, "inject-scancode", "uint32",
++                        NULL, rtd2841_ir_set_inject_scancode,
++                        NULL, NULL);
++}
++
++DeviceState *rtd2841_ir_create(hwaddr irda_base, hwaddr iso_misc_base, qemu_irq irq)
++{
++    DeviceState *dev = qdev_new(TYPE_RTD2841_IR);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
++
++    sysbus_realize_and_unref(sbd, &error_fatal);
++    sysbus_mmio_map(sbd, 0, irda_base);
++    sysbus_mmio_map(sbd, 1, iso_misc_base);
++    sysbus_connect_irq(sbd, 0, irq);
++
++    return dev;
++}
++
++static const VMStateDescription vmstate_rtd2841_ir = {
++    .name = "rtd2841_ir",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT32(psr, RTD2841IRState),
++        VMSTATE_UINT32(per, RTD2841IRState),
++        VMSTATE_UINT32(sf, RTD2841IRState),
++        VMSTATE_UINT32(dpir, RTD2841IRState),
++        VMSTATE_UINT32(cr, RTD2841IRState),
++        VMSTATE_UINT32(rp, RTD2841IRState),
++        VMSTATE_UINT32(sr, RTD2841IRState),
++        VMSTATE_UINT32(psr_up, RTD2841IRState),
++        VMSTATE_UINT32(per_up, RTD2841IRState),
++        VMSTATE_UINT32(ctrl_rc6, RTD2841IRState),
++        VMSTATE_UINT32(rp2, RTD2841IRState),
++        VMSTATE_UINT32(ext_rp_cf, RTD2841IRState),
++        VMSTATE_UINT32(ext_rp_timing, RTD2841IRState),
++        VMSTATE_UINT32(ext_rp_timing_up, RTD2841IRState),
++        VMSTATE_UINT32(hw_decode_sel, RTD2841IRState),
++        VMSTATE_UINT32(hw_decode_read, RTD2841IRState),
++        VMSTATE_UINT32(decode_mask_data_read, RTD2841IRState),
++        VMSTATE_UINT32(hw_decode_data, RTD2841IRState),
++        VMSTATE_UINT32(decode_mask_data, RTD2841IRState),
++        VMSTATE_UINT32(int_ctrl, RTD2841IRState),
++        VMSTATE_UINT32(int_ctrl1, RTD2841IRState),
++        VMSTATE_UINT32(compare_test_mode, RTD2841IRState),
++        VMSTATE_UINT32(compare_test_mode_data7_l, RTD2841IRState),
++        VMSTATE_UINT32(compare_test_mode_data7_h, RTD2841IRState),
++        VMSTATE_UINT32(compare_test_mode_sel, RTD2841IRState),
++        VMSTATE_UINT32(psr_rc5_rc6, RTD2841IRState),
++        VMSTATE_UINT32(per_rc5_rc6, RTD2841IRState),
++        VMSTATE_UINT32(psr_up_rc5_rc6, RTD2841IRState),
++        VMSTATE_UINT32(per_up_rc5_rc6, RTD2841IRState),
++        VMSTATE_UINT32(cr_rc5_rc6, RTD2841IRState),
++        VMSTATE_UINT32(dpir_rc5_rc6, RTD2841IRState),
++        VMSTATE_UINT32(rpt_ctrl_rc5_rc6, RTD2841IRState),
++        VMSTATE_UINT32(iso_misc_isr, RTD2841IRState),
++        VMSTATE_UINT32(iso_misc_dbg, RTD2841IRState),
++        VMSTATE_UINT32(iso_misc_system, RTD2841IRState),
++        VMSTATE_UINT32(iso_misc_ddc_ctrl, RTD2841IRState),
++        VMSTATE_UINT32(iso_misc_dummy1, RTD2841IRState),
++        VMSTATE_UINT32(iso_misc_dummy2, RTD2841IRState),
++        VMSTATE_BOOL(rp_unread, RTD2841IRState),
++        VMSTATE_UINT32_ARRAY(fifo, RTD2841IRState, RTD2841_IR_FIFO_SIZE),
++        VMSTATE_UINT32(fifo_head, RTD2841IRState),
++        VMSTATE_UINT32(fifo_tail, RTD2841IRState),
++        VMSTATE_UINT32(fifo_count, RTD2841IRState),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++static void rtd2841_ir_class_init(ObjectClass *oc, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(oc);
++
++    (void)data;
++    device_class_set_legacy_reset(dc, rtd2841_ir_reset);
++    dc->vmsd = &vmstate_rtd2841_ir;
++    dc->desc = "Realtek RTD2841 IR Receiver Controller";
++}
++
++static const TypeInfo rtd2841_ir_info = {
++    .name          = TYPE_RTD2841_IR,
++    .parent        = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(RTD2841IRState),
++    .instance_init = rtd2841_ir_init,
++    .class_init    = rtd2841_ir_class_init,
++};
++
++static void rtd2841_ir_register_types(void)
++{
++    type_register_static(&rtd2841_ir_info);
++}
++
++type_init(rtd2841_ir_register_types)
 diff --git a/hw/arm/rtd2841_timer.c b/hw/arm/rtd2841_timer.c
 new file mode 100644
 index 0000000..2346014
@@ -1820,10 +2594,10 @@ index 0000000..2346014
 +}
 diff --git a/include/hw/arm/rtd2841.h b/include/hw/arm/rtd2841.h
 new file mode 100644
-index 0000000..8946b1c
+index 0000000..83b49cc
 --- /dev/null
 +++ b/include/hw/arm/rtd2841.h
-@@ -0,0 +1,201 @@
+@@ -0,0 +1,211 @@
 +/*
 + * Realtek RTD2841 SoC & Machine Model Definitions
 + * Target: TCL Smart TV RT41 Chassis (profile tv030)
@@ -1915,6 +2689,15 @@ index 0000000..8946b1c
 +
 +DeviceState *rtd2841_timer_create(hwaddr base, qemu_irq irq);
 +DeviceState *rtd2841_wdog_create(hwaddr base);
++
++#define TYPE_RTD2841_IR "rtd2841-ir"
++#define RTD2841_IR_BASE             0x18061400ULL
++#define RTD2841_IR_SIZE             0x00000200ULL           /* 512 B IRDA */
++#define RTD2841_ISO_MISC_BASE       0x18061000ULL
++#define RTD2841_ISO_MISC_SIZE       0x00000020ULL           /* 32 B ISO_MISC */
++
++DeviceState *rtd2841_ir_create(hwaddr irda_base, hwaddr iso_misc_base, qemu_irq irq);
++void rtd2841_ir_inject_scancode(DeviceState *dev, uint32_t scancode);
 +#define RTD2841_GPU_BASE            0x18040000ULL
 +#define RTD2841_GPU_SIZE            0x00004000ULL           /* 16 KB GPU */
 +#define RTD2841_ARM_TSG_BASE        0x1805C800ULL
@@ -2010,6 +2793,7 @@ index 0000000..8946b1c
 +    ARMCPU cpu[RTD2841_NUM_CPUS];
 +    GICState gic;
 +    RTD2841EthState eth;
++    DeviceState *ir;
 +};
 +
 +struct RTD2841MachineState {
@@ -2025,6 +2809,18 @@ index 0000000..8946b1c
 +};
 +
 +#endif /* HW_ARM_RTD2841_H */
+diff --git a/include/monitor/hmp.h b/include/monitor/hmp.h
+index ef53e87..255a3ae 100644
+--- a/include/monitor/hmp.h
++++ b/include/monitor/hmp.h
+@@ -135,6 +135,7 @@ void hmp_mouse_move(MonitorHMP *hmp, const QDict *qdict);
+ void hmp_mouse_button(MonitorHMP *hmp, const QDict *qdict);
+ void hmp_mouse_set(MonitorHMP *hmp, const QDict *qdict);
+ void hmp_sendkey(MonitorHMP *hmp, const QDict *qdict);
++void hmp_rtd2841_ir_inject(MonitorHMP *hmp, const QDict *qdict);
+ void coroutine_fn hmp_screendump(MonitorHMP *hmp, const QDict *qdict);
+ void hmp_chardev_add(MonitorHMP *hmp, const QDict *qdict);
+ void hmp_chardev_change(MonitorHMP *hmp, const QDict *qdict);
 diff --git a/meson.build b/meson.build
 index b67a97a..31f378d 100644
 --- a/meson.build
@@ -2040,39 +2836,67 @@ index b67a97a..31f378d 100644
  elif host_os == 'sunos'
    socket = [cc.find_library('socket'),
              cc.find_library('nsl'),
-diff --git a/hw/arm/rtd2841-smpboot.S b/hw/arm/rtd2841-smpboot.S
-new file mode 100644
---- /dev/null
-+++ b/hw/arm/rtd2841-smpboot.S
-@@ -0,0 +1,31 @@
-+/*
-+ * Linux direct-boot assistance for the RTD284x per-CPU mailbox contract.
-+ * This is source for rtd2841_smpboot[] in rtd2841.c, not a retail boot ROM.
-+ * No stack, MMU, cache, or interrupt-controller setup is needed here.
-+ * SPDX-License-Identifier: GPL-2.0-or-later
-+ */
-+.syntax unified
-+.arm
-+.text
-+.global _start
-+_start:
-+    mrc p15, 0, r0, c0, c0, 5
-+    and r0, r0, #0xff
-+    cmp r0, #1
-+    blo park
-+    cmp r0, #3
-+    bhi park
-+    movw r1, #0x500
-+    add r1, r1, r0, lsl #2
-+poll:
-+    ldr r2, [r1]
-+    cmp r2, #0
-+    bne released
-+    wfe
-+    b poll
-+released:
-+    dmb sy
-+    bx r2
-+park:
-+    wfe
-+    b park
+diff --git a/monitor/hmp-cmds.c b/monitor/hmp-cmds.c
+index 9b1b94f..484e908 100644
+--- a/monitor/hmp-cmds.c
++++ b/monitor/hmp-cmds.c
+@@ -350,6 +350,17 @@ void hmp_log(MonitorHMP *hmp, const QDict *qdict)
+     }
+ }
+ 
++void hmp_rtd2841_ir_inject(MonitorHMP *hmp, const QDict *qdict)
++{
++    uint32_t scancode = qdict_get_int(qdict, "scancode");
++    Error *err = NULL;
++
++    qmp_rtd2841_ir_inject(scancode, &err);
++    if (err) {
++        hmp_handle_error(hmp, err);
++    }
++}
++
+ void hmp_gdbserver(MonitorHMP *hmp, const QDict *qdict)
+ {
+     Error *err = NULL;
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 7525a88..4555b64 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -191,6 +191,16 @@ out:
+ }
+ #endif /* CONFIG_HMP */
+ 
++void qmp_rtd2841_ir_inject(uint32_t scancode, Error **errp)
++{
++    Object *obj = object_resolve_path_type("", "rtd2841-ir", NULL);
++    if (!obj) {
++        error_setg(errp, "RTD2841 IR device not found");
++        return;
++    }
++    object_property_set_uint(obj, "inject-scancode", scancode, errp);
++}
++
+ static void __attribute__((__constructor__)) monitor_init_qmp_commands(void)
+ {
+     /*
+diff --git a/qapi/misc.json b/qapi/misc.json
+index 4469e44..29f2a3c 100644
+--- a/qapi/misc.json
++++ b/qapi/misc.json
+@@ -538,6 +538,16 @@
+  'returns': ['CommandLineOptionInfo'],
+  'allow-preconfig': true}
+ 
++##
++# @rtd2841-ir-inject:
++#
++# Inject IR remote scancode into RTD2841 IR receiver FIFO
++#
++# @scancode: scancode to inject (e.g. 0x0b for KEY_ENTER)
++##
++{ 'command': 'rtd2841-ir-inject',
++  'data': { 'scancode': 'uint32' } }
++
+ ##
+ # @RTC_CHANGE:
+ #     Emitted when the guest changes the RTC time.

@@ -1,0 +1,37 @@
+{
+  "milestone": "Phase 3 Milestone 4",
+  "target": "RTD2841 / TCL RT41 Chassis (tv030)",
+  "kernel_sha256": "93bd3c183c5080eef432bae823e092c6c3df590cdfdd3ba53733f62721bf7260",
+  "dtb_sha256": "5526d237716782e4a415d0a0b18d0d63706dfdda09257bcc0b9ac14d2c49f75f",
+  "init_sha256": "143c2b7013ac06e627b657fb6fd9ad2a006551842b093b59f95467a7c0be6f01",
+  "su_sha256": "5d733948ce5da639282d66d6d197b5ab6453f85f1ecc92f8bf9ab2d6bdf9fb8c",
+  "gles_sha256": "2629054fd513246614ac7829b7e7620c53fa83355a502d7d41eca20ccbcda258",
+  "disk_sha256_before": "ad59842d0986c38b8fa3a1746daf51457ba971e11de4d14c2488628f3fb1f4a8",
+  "disk_sha256_after": "ad59842d0986c38b8fa3a1746daf51457ba971e11de4d14c2488628f3fb1f4a8",
+  "disk_immutability_verified": true,
+  "install": {
+    "quit_sent": true,
+    "commands_sent": true,
+    "done": true,
+    "qemu_exit_code": 0,
+    "elapsed_seconds": 12.8,
+    "adb_hook_result": null
+  },
+  "android_userspace_verification": {
+    "success": true,
+    "model": "UnionTV",
+    "sdk": "28",
+    "abilist32": "armeabi-v7a,armeabi",
+    "hwsm_ready": "true",
+    "surfaceflinger_running": true,
+    "surfaceflinger_registered": true,
+    "configstore_running": true,
+    "allocator_running": true,
+    "composer_running": true,
+    "zygote_running": true,
+    "service_check_sf": "Service SurfaceFlinger: found",
+    "data_mount": "/dev/mmcblk0p3 on /data type ext4 (rw,seclabel,relatime,data=ordered)",
+    "dmesg_tail": "[   26.478888] 00:00:22.399 (3)-0178\\x09binder: 166 RLIMIT_NICE not set\n[   26.523960] 00:00:22.444 (3)-0178\\x09binder: 166 RLIMIT_NICE not set\n[   26.545080] 00:00:22.466 (3)-0178\\x09binder: 166 RLIMIT_NICE not set\n[   26.658659] 00:00:22.579 (2)-0178\\x09binder: 166 RLIMIT_NICE not set\n[   26.664978] 00:00:22.585 (2)-0178\\x09binder: 166 RLIMIT_NICE not set\n[   26.678626] 00:00:22.599 (0)-0204\\x09binder: 166 RLIMIT_NICE not set\n[   26.745173] 00:00:22.666 (3)-0204\\x09binder: 166 RLIMIT_NICE not set\n[   26.913902] 00:00:22.834 (2)-0178\\x09binder: 166 RLIMIT_NICE not set\n[   26.957821] 00:00:22.878 (2)-0178\\x09binder: 166 RLIMIT_NICE not set\n[   26.972501] 00:00:22.893 (2)-0178\\x09binder: 166 RLIMIT_NICE not set\n[   26.977455] 00:00:22.898 (2)-0178\\x09binder: 166 RLIMIT_NICE not set\n[   27.089423] 00:00:23.010 (3)-0178\\x09binder: 165 RLIMIT_NICE not set\n[   27.103934] 00:00:23.024 (3)-0178\\x09binder: 165 RLIMIT_NICE not set\n[   27.185219] 00:00:23.106 (0)-0178\\x09binder: 165 RLIMIT_NICE not set\n[   27.217539] 00:00:23.138 (0)-0178\\x09binder: 166 RLIMIT_NICE not set\n[   27.409203] 00:00:23.330 (1)-0215\\x09audit: type=1400 audit(1104537623.309:143): avc:  denied  { execute_no_trans } for  pid=215 comm=\"sh\" path=\"/xbin/su\" dev=\"mmcblk0p1\" ino=2177 scontext=u:r:kernel:s0 tcontext=u:object_r:unlabeled:s0 tclass=file permissive=1\n[   28.964244] 00:00:24.885 (1)-0216\\x09audit: type=1400 audit(1104537624.879:144): avc:  denied  { getattr } for  pid=216 comm=\"ps\" path=\"/proc/187\" dev=\"proc\" ino=1365 scontext=u:r:kernel:s0 tcontext=u:r:crash_dump:s0 tclass=dir permissive=1\n[   28.968034] 00:00:24.889 (1)-0216\\x09audit: type=1400 audit(1104537624.879:145): avc:  denied  { search } for  pid=216 comm=\"ps\" name=\"187\" dev=\"proc\" ino=1365 scontext=u:r:kernel:s0 tcontext=u:r:crash_dump:s0 tclass=dir permissive=1\n[   28.969978] 00:00:24.890 (1)-0216\\x09audit: type=1400 audit(1104537624.879:146): avc:  denied  { read } for  pid=216 comm=\"ps\" name=\"stat\" dev=\"proc\" ino=1581 scontext=u:r:kernel:s0 tcontext=u:r:crash_dump:s0 tclass=file permissive=1\n[   28.971835] 00:00:24.892 (1)-0216\\x09audit: type=1400 audit(1104537624.879:147): avc:  denied  { open } for  pid=216 comm=\"ps\" path=\"/proc/187/stat\" dev=\"proc\" ino=1581 scontext=u:r:kernel:s0 tcontext=u:r:crash_dump:s0 tclass=file permissive=1\n[   29.422853] 00:00:25.343 (3)-0220\\x09audit: type=1400 audit(1104537625.329:148): avc:  denied  { getattr } for  pid=220 comm=\"mount\" path=\"/sys/realtek_boards/panel_parameter\" dev=\"tmpfs\" ino=3123 scontext=u:r:kernel:s0 tcontext=u:object_r:tmpfs:s0 tclass=file permissive=1\n[   29.426082] 00:00:25.347 (3)-0220\\x09audit: type=1400 audit(1104537625.339:149): avc:  denied  { read } for  pid=220 comm=\"mount\" name=\"/\" dev=\"mmcblk0p1\" ino=2 scontext=u:r:kernel:s0 tcontext=u:object_r:unlabeled:s0 tclass=dir permissive=1\n[   29.427390] 00:00:25.348 (3)-0220\\x09audit: type=1400 audit(1104537625.339:150): avc:  denied  { open } for  pid=220 comm=\"mount\" path=\"/\" dev=\"mmcblk0p1\" ino=2 scontext=u:r:kernel:s0 tcontext=u:object_r:unlabeled:s0 tclass=dir permissive=1\n[   31.002089] 00:00:26.923 (0)-0225\\x09audit_printk_skb: 18 callbacks suppressed\n[   31.051330] 00:00:26.972 (0)-0225\\x09audit: type=1400 audit(1104537626.909:157): avc:  denied  { syslog_read } for  pid=225 comm=\"dmesg\" scontext=u:r:kernel:s0 tcontext=u:r:kernel:s0 tclass=system permissive=1\n"
+  },
+  "status": "ALL_TESTS_PASSED"
+}

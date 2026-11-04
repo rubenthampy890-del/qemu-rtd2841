@@ -1,0 +1,53 @@
+{
+  "milestone": "Phase 3 Milestone 2",
+  "target": "RTD2841 / TCL RT41 Chassis (tv030)",
+  "kernel_sha256": "93bd3c183c5080eef432bae823e092c6c3df590cdfdd3ba53733f62721bf7260",
+  "dtb_sha256": "5526d237716782e4a415d0a0b18d0d63706dfdda09257bcc0b9ac14d2c49f75f",
+  "init_sha256": "143c2b7013ac06e627b657fb6fd9ad2a006551842b093b59f95467a7c0be6f01",
+  "su_sha256": "5d733948ce5da639282d66d6d197b5ab6453f85f1ecc92f8bf9ab2d6bdf9fb8c",
+  "disk_sha256_before": "ad59842d0986c38b8fa3a1746daf51457ba971e11de4d14c2488628f3fb1f4a8",
+  "disk_sha256_after": "ad59842d0986c38b8fa3a1746daf51457ba971e11de4d14c2488628f3fb1f4a8",
+  "disk_immutability_verified": true,
+  "install": {
+    "quit_sent": true,
+    "commands_sent": true,
+    "done": true,
+    "qemu_exit_code": 0,
+    "elapsed_seconds": 10.9,
+    "adb_hook_result": null
+  },
+  "verify": {
+    "quit_sent": true,
+    "commands_sent": true,
+    "done": true,
+    "qemu_exit_code": 0,
+    "elapsed_seconds": 13.4,
+    "adb_hook_result": {
+      "success": true,
+      "adb_connect": "connected to 127.0.0.1:57614",
+      "adb_devices": "List of devices attached\n127.0.0.1:57614        device product:UnionTV model:UnionTV device:UnionTV transport_id:1",
+      "adb_shell_unprivileged": "uid=2000(shell) gid=2000(shell) groups=2000(shell),1004(input),1007(log),1011(adb),1015(sdcard_rw),1028(sdcard_r),3001(net_bt_admin),3002(net_bt),3003(inet),3006(net_bw_stats),3009(readproc),3011(uhid) context=u:r:kernel:s0",
+      "adb_su_c_id": "uid=0(root) gid=0(root) groups=0(root),1004(input),1007(log),1011(adb),1015(sdcard_rw),1028(sdcard_r),3001(net_bt_admin),3002(net_bt),3003(inet),3006(net_bw_stats),3009(readproc),3011(uhid) context=u:r:kernel:s0",
+      "adb_su_c_rc": 0,
+      "adb_su_0_id": "uid=0(root) gid=0(root) groups=0(root),1004(input),1007(log),1011(adb),1015(sdcard_rw),1028(sdcard_r),3001(net_bt_admin),3002(net_bt),3003(inet),3006(net_bw_stats),3009(readproc),3011(uhid) context=u:r:kernel:s0",
+      "adb_su_0_rc": 0,
+      "adb_prop_ready": "true",
+      "uid0_verified": true,
+      "prop_verified": true
+    }
+  },
+  "adb_verification": {
+    "success": true,
+    "adb_connect": "connected to 127.0.0.1:57614",
+    "adb_devices": "List of devices attached\n127.0.0.1:57614        device product:UnionTV model:UnionTV device:UnionTV transport_id:1",
+    "adb_shell_unprivileged": "uid=2000(shell) gid=2000(shell) groups=2000(shell),1004(input),1007(log),1011(adb),1015(sdcard_rw),1028(sdcard_r),3001(net_bt_admin),3002(net_bt),3003(inet),3006(net_bw_stats),3009(readproc),3011(uhid) context=u:r:kernel:s0",
+    "adb_su_c_id": "uid=0(root) gid=0(root) groups=0(root),1004(input),1007(log),1011(adb),1015(sdcard_rw),1028(sdcard_r),3001(net_bt_admin),3002(net_bt),3003(inet),3006(net_bw_stats),3009(readproc),3011(uhid) context=u:r:kernel:s0",
+    "adb_su_c_rc": 0,
+    "adb_su_0_id": "uid=0(root) gid=0(root) groups=0(root),1004(input),1007(log),1011(adb),1015(sdcard_rw),1028(sdcard_r),3001(net_bt_admin),3002(net_bt),3003(inet),3006(net_bw_stats),3009(readproc),3011(uhid) context=u:r:kernel:s0",
+    "adb_su_0_rc": 0,
+    "adb_prop_ready": "true",
+    "uid0_verified": true,
+    "prop_verified": true
+  },
+  "status": "ALL_TESTS_PASSED"
+}

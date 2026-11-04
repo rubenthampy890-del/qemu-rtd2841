@@ -46,6 +46,7 @@
 #endif
 #include "hw/sd/sdhci.h"
 #include "hw/sd/sd.h"
+#include "hw/core/or-irq.h"
 #include "ui/input.h"
 #include "hw/core/irq.h"
 #include "net/net.h"
@@ -847,12 +848,23 @@ static void rtd2841_soc_realize(DeviceState *dev, Error **errp)
                 RTD2841_GIC_PPI_TO_GPIO(i, RTD2841_IRQ_PPI_SEC_PHYS_TIMER)));
     }
 
+    /*
+     * Shared GIC INTID 57 (SPI 25): OR gate for UART0 and IR receiver.
+     * Both UART0 (0x18062300) and IR (0x18061400) assert GIC INTID 57.
+     * Using TYPE_OR_IRQ ensures neither clobbers the other.
+     */
+    DeviceState *uart_ir_orgate = qdev_new(TYPE_OR_IRQ);
+    qdev_prop_set_uint16(uart_ir_orgate, "num-lines", 2);
+    qdev_realize_and_unref(uart_ir_orgate, NULL, &error_fatal);
+    qdev_connect_gpio_out(uart_ir_orgate, 0,
+                          qdev_get_gpio_in(gicdev,
+                              RTD2841_GIC_SPI_TO_GPIO(RTD2841_UART0_SPI)));
+
     /* 16550A UART0 @ 0x18062300, 27MHz clock, 4-byte stride (shift=2) */
     serial_mm_init(get_system_memory(),
                    RTD2841_UART0_BASE,
                    RTD2841_UART0_REG_SHIFT,
-                   qdev_get_gpio_in(gicdev,
-                       RTD2841_GIC_SPI_TO_GPIO(RTD2841_UART0_SPI)),
+                   qdev_get_gpio_in(uart_ir_orgate, 0),
                    RTD2841_UART0_BAUDBASE,
                    serial_hd(0),
                    DEVICE_LITTLE_ENDIAN);
@@ -914,6 +926,11 @@ static void rtd2841_soc_realize(DeviceState *dev, Error **errp)
     create_unimplemented_device("rtd2841.arm_tsg",
                                 RTD2841_ARM_TSG_BASE, RTD2841_ARM_TSG_SIZE);
     rtd2841_wdog_create(RTD2841_WDOG_BASE);
+
+    /* Realtek IR Receiver Controller @ 0x18061400 / 0x18061000 */
+    s->ir = rtd2841_ir_create(RTD2841_IR_BASE, RTD2841_ISO_MISC_BASE,
+                              qdev_get_gpio_in(uart_ir_orgate, 1));
+
     create_unimplemented_device("rtd2841.scu",
                                 RTD2841_SCU_BASE, RTD2841_SCU_SIZE);
 }
@@ -967,7 +984,6 @@ static const GraphicHardwarePageOps rtd2841_fb_ops = {
 static void rtd2841_kbd_event(DeviceState *dev, QemuConsole *src,
                               QemuInputEvent *evt)
 {
-    (void)dev;
     (void)src;
     if (evt->type != INPUT_EVENT_KIND_KEY) {
         return;
@@ -979,41 +995,75 @@ static void rtd2841_kbd_event(DeviceState *dev, QemuConsole *src,
     int qcode = qemu_input_linux_to_qcode(evt->key.key);
     char c = 0;
     const char *seq = NULL;
+    uint32_t ir_scancode = 0;
 
     switch (qcode) {
-    case Q_KEY_CODE_1: c = '1'; break;
-    case Q_KEY_CODE_2: c = '2'; break;
-    case Q_KEY_CODE_3: c = '3'; break;
-    case Q_KEY_CODE_4: c = '4'; break;
-    case Q_KEY_CODE_5: c = '5'; break;
-    case Q_KEY_CODE_6: c = '6'; break;
+    case Q_KEY_CODE_1: c = '1'; ir_scancode = 0xCE; break;
+    case Q_KEY_CODE_2: c = '2'; ir_scancode = 0xCD; break;
+    case Q_KEY_CODE_3: c = '3'; ir_scancode = 0xCC; break;
+    case Q_KEY_CODE_4: c = '4'; ir_scancode = 0xCB; break;
+    case Q_KEY_CODE_5: c = '5'; ir_scancode = 0xCA; break;
+    case Q_KEY_CODE_6: c = '6'; ir_scancode = 0xC9; break;
+    case Q_KEY_CODE_7: c = '7'; ir_scancode = 0xC8; break;
+    case Q_KEY_CODE_8: c = '8'; ir_scancode = 0xC7; break;
+    case Q_KEY_CODE_9: c = '9'; ir_scancode = 0xC6; break;
+    case Q_KEY_CODE_0: c = '0'; ir_scancode = 0xCF; break;
     case Q_KEY_CODE_LEFT:
     case Q_KEY_CODE_H:
         seq = "\033[D";
+        ir_scancode = 0xA9;
         break;
     case Q_KEY_CODE_RIGHT:
     case Q_KEY_CODE_L:
         seq = "\033[C";
+        ir_scancode = 0xA8;
         break;
     case Q_KEY_CODE_UP:
     case Q_KEY_CODE_K:
         seq = "\033[A";
+        ir_scancode = 0xA6;
         break;
     case Q_KEY_CODE_DOWN:
     case Q_KEY_CODE_J:
         seq = "\033[B";
+        ir_scancode = 0xA7;
         break;
     case Q_KEY_CODE_RET:
     case Q_KEY_CODE_KP_ENTER:
         c = '\r';
+        ir_scancode = 0x0B;
         break;
     case Q_KEY_CODE_B: c = 'b'; break;
     case Q_KEY_CODE_T: c = 't'; break;
     case Q_KEY_CODE_C: c = 'c'; break;
     case Q_KEY_CODE_Q: c = 'q'; break;
-    case Q_KEY_CODE_BACKSPACE: c = 0x7f; break;
+    case Q_KEY_CODE_M: c = 'm'; ir_scancode = 0xC0; break;
+    case Q_KEY_CODE_F10: ir_scancode = 0xD0; break;
+    case Q_KEY_CODE_F9: ir_scancode = 0xD1; break;
+    case Q_KEY_CODE_HOME: ir_scancode = 0xF7; break;
+    case Q_KEY_CODE_TAB: ir_scancode = 0x13; break;
+    case Q_KEY_CODE_ESC: ir_scancode = 0xD8; break;
+    case Q_KEY_CODE_POWER: ir_scancode = 0xD5; break;
+    case Q_KEY_CODE_BACKSPACE: c = 0x7f; ir_scancode = 0xD8; break;
     default:
         break;
+    }
+
+    if (ir_scancode != 0) {
+        DeviceState *ir_dev = NULL;
+        if (dev) {
+            RTD2841SocState *soc = RTD2841_SOC(dev);
+            ir_dev = soc->ir;
+        }
+        if (!ir_dev) {
+            Object *ir_obj = object_resolve_path_type("", TYPE_RTD2841_IR, NULL);
+            if (ir_obj) {
+                ir_dev = DEVICE(ir_obj);
+            }
+        }
+        if (ir_dev) {
+            rtd2841_ir_inject_scancode(ir_dev, ir_scancode);
+        }
     }
 
     Chardev *chr = serial_hd(0);
@@ -1073,8 +1123,8 @@ static void rtd2841_tv030_init(MachineState *machine)
         dpy_gfx_replace_surface(ms->console, surface);
     }
 
-    /* Direct key events to UART console */
-    (void)qemu_input_handler_register(NULL, &rtd2841_kbd_handler);
+    /* Direct key events to UART console & IR receiver */
+    (void)qemu_input_handler_register(DEVICE(&ms->soc), &rtd2841_kbd_handler);
 
     ms->boot_info.ram_size = machine->ram_size;
     ms->boot_info.board_id = -1;

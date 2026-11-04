@@ -11,4 +11,6 @@ docs/phase3/
 /AGENTS.md
 /codex.md
 /engineering_doctrine.md
+.agents/
+tools/pytclfirmware/
 tests/firmware_smp_test.bin

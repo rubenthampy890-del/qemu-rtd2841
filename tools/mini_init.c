@@ -1,5 +1,9 @@
 #include "font8x16.h"
 
+typedef unsigned int uint32_t;
+typedef unsigned short uint16_t;
+typedef unsigned char uint8_t;
+
 static inline long my_syscall0(long n) {
     register long r7 __asm__("r7") = n;
     register long r0 __asm__("r0");
@@ -114,6 +118,19 @@ static inline void print_dec(long val) {
     print_str(buf);
 }
 
+static inline void print_hex(unsigned long val) {
+    char buf[16];
+    static const char hexchars[] = "0123456789abcdef";
+    int i = 0;
+    buf[i++] = '0';
+    buf[i++] = 'x';
+    for (int shift = 28; shift >= 0; shift -= 4) {
+        buf[i++] = hexchars[(val >> shift) & 0xf];
+    }
+    buf[i] = '\0';
+    print_str(buf);
+}
+
 static inline void print_ip(unsigned int ip) {
     print_dec(ip & 0xFF);
     print_str(".");
@@ -122,6 +139,34 @@ static inline void print_ip(unsigned int ip) {
     print_dec((ip >> 16) & 0xFF);
     print_str(".");
     print_dec((ip >> 24) & 0xFF);
+}
+
+static inline void my_memory_barrier(void) {
+    __asm__ volatile(".arch armv7-a\n\tdmb ish" ::: "memory");
+}
+
+static inline const char *my_strchr(const char *s, int c) {
+    while (*s) {
+        if (*s == (char)c) return s;
+        s++;
+    }
+    return 0;
+}
+
+static inline int my_strncmp(const char *s1, const char *s2, unsigned long n) {
+    for (unsigned long i = 0; i < n; i++) {
+        if (s1[i] != s2[i]) return (int)(unsigned char)s1[i] - (int)(unsigned char)s2[i];
+        if (s1[i] == '\0') return 0;
+    }
+    return 0;
+}
+
+static inline int my_strcmp(const char *s1, const char *s2) {
+    while (*s1 && (*s1 == *s2)) {
+        s1++;
+        s2++;
+    }
+    return (int)(unsigned char)*s1 - (int)(unsigned char)*s2;
 }
 
 #ifndef WIFEXITED
@@ -206,7 +251,8 @@ static const char banner[] =
 
 static const char msg_mount_proc[]   = "[+] Mounted /proc and /sys filesystems\n";
 static const char msg_mount_vendor[] = "[+] Mounted /vendor from /dev/mmcblk0p2 (ext4)\n";
-static const char msg_mount_tmpfs[]  = "[+] Mounted tmpfs on /data, /cache, /tmp, /mnt, /storage\n";
+static const char msg_mount_data[]   = "[+] Mounted /data from /dev/mmcblk0p3 (ext4)\n";
+static const char msg_mount_tmpfs[]  = "[+] Mounted tmpfs on /cache, /tmp, /mnt, /storage\n";
 static const char msg_paint_fb[]     = "[+] Framebuffer /dev/fb0 updated: TCL Smart TV Dashboard rendered!\n";
 static const char msg_exec_sh[]      = "[+] Dropping into interactive Linux root shell (/bin/sh)...\n\n";
 
@@ -221,6 +267,7 @@ static const char str_sys_path[]    = "/sys";
 static const char str_devpts_path[] = "/dev/pts";
 static const char str_vendor_dev[]  = "/dev/mmcblk0p2";
 static const char str_vendor_path[] = "/vendor";
+static const char str_data_dev[]    = "/dev/mmcblk0p3";
 static const char str_data_path[]   = "/data";
 static const char str_cache_path[]  = "/cache";
 static const char str_tmp_path[]    = "/tmp";
@@ -228,8 +275,19 @@ static const char str_mnt_path[]    = "/mnt";
 static const char str_storage_path[]= "/storage";
 static const char str_fb_path[]     = "/dev/fb0";
 static const char str_ttyS0[]       = "/dev/ttyS0";
-static const char str_binder[]      = "/dev/binder";
-static const char str_servicemanager[] = "/system/bin/servicemanager";
+static const char str_binder[]            = "/dev/binder";
+static const char str_hwbinder[]          = "/dev/hwbinder";
+static const char str_vndbinder[]         = "/dev/vndbinder";
+static const char str_urandom[]           = "/dev/urandom";
+static const char str_servicemanager[]    = "/system/bin/servicemanager";
+static const char str_hwservicemanager[]   = "/system/bin/hwservicemanager";
+static const char str_vndservicemanager[]  = "/vendor/bin/vndservicemanager";
+static const char str_xbin_path[]         = "/system/xbin";
+static const char str_su_path[]           = "/system/xbin/su";
+static const char str_misc_path[]         = "/data/misc";
+static const char str_adb_path[]          = "/data/misc/adb";
+static const char str_local_path[]        = "/data/local";
+static const char str_tmp_local_path[]    = "/data/local/tmp";
 
 /* Symlinks for Android Treble compatibility */
 static const char str_system_etc[]  = "/system/etc";
@@ -247,13 +305,13 @@ static const char str_data[]        = "ANDROID_DATA=/data";
 static const char str_storage[]     = "ANDROID_STORAGE=/storage";
 static const char str_egl[]         = "ro.hardware.egl=android";
 static const char str_gralloc[]     = "ro.hardware.gralloc=default";
+static const char str_hwc[]         = "ro.hardware.hwcomposer=default";
 static const char str_term[]        = "TERM=vt100";
 static const char str_home[]        = "HOME=/";
 
 static char *argv[] = {(char*)str_sh, 0};
 static char *envp[] = {
     (char*)str_path,
-    (char*)str_ld,
     (char*)str_root,
     (char*)str_data,
     (char*)str_storage,
@@ -535,24 +593,544 @@ __attribute__((noreturn)) static void exit_sm_child(int status) {
     for (;;) { }
 }
 
-/* Match the stock servicemanager.rc user/group contract. */
-static int start_servicemanager(void) {
-    unsigned int readproc_gid = 3009;
-    char *sm_argv[] = {(char *)str_servicemanager, 0};
-    long rc;
+#define PROP_AREA_MAGIC   0x504f5250
+#define PROP_AREA_VERSION 0xfc6ed0ab
+#define PA_SIZE           131072
 
-    /* devtmpfs supplies 0600 root:root without Android ueventd. */
-    rc = my_syscall2(15 /* __NR_chmod */, (long)str_binder, 0666);
+struct prop_area_hdr {
+    unsigned int bytes_used;
+    unsigned int serial;
+    unsigned int magic;
+    unsigned int version;
+    unsigned int reserved[28];
+};
+
+struct prop_bt {
+    unsigned int namelen;
+    unsigned int prop;
+    unsigned int left;
+    unsigned int right;
+    unsigned int children;
+    char name[0];
+};
+
+struct prop_info {
+    unsigned int serial;
+    char value[92];
+    char name[0];
+};
+
+struct prop_msg {
+    unsigned int cmd;
+    char name[32];
+    char value[92];
+};
+
+struct my_sockaddr_un {
+    unsigned short sun_family;
+    char sun_path[108];
+};
+
+static void prop_area_init(void *area) {
+    my_memset(area, 0, PA_SIZE);
+    struct prop_area_hdr *hdr = (struct prop_area_hdr *)area;
+    hdr->bytes_used = 20; /* root_bt occupies bytes 0..19 of data area */
+    hdr->serial = 0;
+    hdr->magic = PROP_AREA_MAGIC;
+    hdr->version = PROP_AREA_VERSION;
+}
+
+static unsigned int prop_area_alloc(void *area, unsigned int size) {
+    struct prop_area_hdr *hdr = (struct prop_area_hdr *)area;
+    unsigned int aligned = (size + 3) & ~3;
+    if (hdr->bytes_used + aligned > PA_SIZE - 128) {
+        return 0;
+    }
+    unsigned int off = hdr->bytes_used;
+    hdr->bytes_used += aligned;
+    return off;
+}
+
+static int prop_area_set(void *area, const char *key, const char *val) {
+    struct prop_area_hdr *hdr = (struct prop_area_hdr *)area;
+    char *data = (char *)area + 128;
+    unsigned int current_bt_off = 0;
+
+    const char *p = key;
+    while (*p) {
+        const char *dot = my_strchr(p, '.');
+        unsigned int comp_len = dot ? (unsigned int)(dot - p) : (unsigned int)my_strlen(p);
+        if (comp_len == 0) return -1;
+
+        struct prop_bt *curr = (struct prop_bt *)(data + current_bt_off);
+        unsigned int *target_link = 0;
+
+        if (curr->children == 0) {
+            unsigned int node_sz = sizeof(struct prop_bt) + comp_len + 1;
+            unsigned int new_off = prop_area_alloc(area, node_sz);
+            if (!new_off) return -1;
+            struct prop_bt *new_node = (struct prop_bt *)(data + new_off);
+            my_memset(new_node, 0, (node_sz + 3) & ~3);
+            new_node->namelen = comp_len;
+            my_memcpy(new_node->name, p, comp_len);
+            new_node->name[comp_len] = '\0';
+            curr->children = new_off;
+            current_bt_off = new_off;
+        } else {
+            unsigned int child_off = curr->children;
+            while (1) {
+                struct prop_bt *child = (struct prop_bt *)(data + child_off);
+                int cmp = 0;
+                if (comp_len < child->namelen) {
+                    cmp = -1;
+                } else if (comp_len > child->namelen) {
+                    cmp = 1;
+                } else {
+                    cmp = my_strncmp(p, child->name, comp_len);
+                }
+
+                if (cmp < 0) {
+                    if (child->left == 0) {
+                        target_link = &child->left;
+                        break;
+                    }
+                    child_off = child->left;
+                } else if (cmp > 0) {
+                    if (child->right == 0) {
+                        target_link = &child->right;
+                        break;
+                    }
+                    child_off = child->right;
+                } else {
+                    current_bt_off = child_off;
+                    target_link = 0;
+                    break;
+                }
+            }
+
+            if (target_link) {
+                unsigned int node_sz = sizeof(struct prop_bt) + comp_len + 1;
+                unsigned int new_off = prop_area_alloc(area, node_sz);
+                if (!new_off) return -1;
+                struct prop_bt *new_node = (struct prop_bt *)(data + new_off);
+                my_memset(new_node, 0, (node_sz + 3) & ~3);
+                new_node->namelen = comp_len;
+                my_memcpy(new_node->name, p, comp_len);
+                new_node->name[comp_len] = '\0';
+                *target_link = new_off;
+                current_bt_off = new_off;
+            }
+        }
+
+        if (dot) {
+            p = dot + 1;
+        } else {
+            break;
+        }
+    }
+
+    struct prop_bt *leaf = (struct prop_bt *)(data + current_bt_off);
+    unsigned int vallen = (unsigned int)my_strlen(val);
+    if (vallen >= 92) vallen = 91;
+
+    if (leaf->prop == 0) {
+        unsigned int keylen = (unsigned int)my_strlen(key);
+        unsigned int info_sz = 96 + keylen + 1;
+        unsigned int info_off = prop_area_alloc(area, info_sz);
+        if (!info_off) return -1;
+        struct prop_info *info = (struct prop_info *)(data + info_off);
+        my_memset(info, 0, (info_sz + 3) & ~3);
+        info->serial = (vallen << 24);
+        my_memcpy(info->value, val, vallen);
+        info->value[vallen] = '\0';
+        my_memcpy(info->name, key, keylen);
+        info->name[keylen] = '\0';
+        leaf->prop = info_off;
+    } else {
+        /* Read-only properties (ro.*) cannot be overwritten once set */
+        if (my_strncmp(key, "ro.", 3) == 0) {
+            return 0; /* Preserve initial read-only property value */
+        }
+        struct prop_info *info = (struct prop_info *)(data + leaf->prop);
+        unsigned int old_serial = info->serial;
+        info->serial |= 1;
+        my_memory_barrier();
+        my_memcpy(info->value, val, vallen);
+        info->value[vallen] = '\0';
+        my_memory_barrier();
+        info->serial = (vallen << 24) | ((old_serial + 2) & 0x00ffffff & ~1);
+    }
+
+    hdr->serial++;
+    return 0;
+}
+
+static const char *prop_area_get(void *area, const char *key) {
+    char *data = (char *)area + 128;
+    unsigned int current_bt_off = 0; /* root_bt */
+
+    const char *p = key;
+    while (*p) {
+        const char *dot = my_strchr(p, '.');
+        unsigned int comp_len = dot ? (unsigned int)(dot - p) : (unsigned int)my_strlen(p);
+        if (comp_len == 0) return 0;
+
+        struct prop_bt *curr = (struct prop_bt *)(data + current_bt_off);
+        if (curr->children == 0) return 0;
+
+        unsigned int child_off = curr->children;
+        int found = 0;
+        while (child_off != 0) {
+            struct prop_bt *child = (struct prop_bt *)(data + child_off);
+            int cmp = 0;
+            if (comp_len < child->namelen) {
+                cmp = -1;
+            } else if (comp_len > child->namelen) {
+                cmp = 1;
+            } else {
+                cmp = my_strncmp(p, child->name, comp_len);
+            }
+
+            if (cmp < 0) {
+                child_off = child->left;
+            } else if (cmp > 0) {
+                child_off = child->right;
+            } else {
+                current_bt_off = child_off;
+                found = 1;
+                break;
+            }
+        }
+
+        if (!found) return 0;
+
+        if (dot) {
+            p = dot + 1;
+        } else {
+            break;
+        }
+    }
+
+    struct prop_bt *leaf = (struct prop_bt *)(data + current_bt_off);
+    if (leaf->prop == 0) return 0;
+    struct prop_info *info = (struct prop_info *)(data + leaf->prop);
+    return info->value;
+}
+
+static void load_prop_file(void *area, const char *path) {
+    long fd = my_syscall3(5 /* __NR_open */, (long)path, 0 /* O_RDONLY */, 0);
+    if (fd < 0) return;
+    static char buf[32768];
+    long r = my_syscall3(3 /* __NR_read */, fd, (long)buf, sizeof(buf) - 1);
+    my_syscall1(6 /* __NR_close */, fd);
+    if (r <= 0) return;
+    buf[r] = '\0';
+
+    char *line = buf;
+    while (*line) {
+        while (*line == ' ' || *line == '\t' || *line == '\r' || *line == '\n') line++;
+        if (!*line) break;
+        if (*line == '#') {
+            while (*line && *line != '\n') line++;
+            continue;
+        }
+        char *eq = 0;
+        char *end = line;
+        while (*end && *end != '\r' && *end != '\n') {
+            if (*end == '=' && !eq) eq = end;
+            end++;
+        }
+        char term = *end;
+        if (eq && eq > line) {
+            *eq = '\0';
+            char *val = eq + 1;
+            *end = '\0';
+            prop_area_set(area, line, val);
+        }
+        line = term ? (end + 1) : end;
+    }
+}
+
+static void *init_properties_area(void) {
+    static const char str_prop_file[] = "/dev/__properties__";
+    my_syscall1(10 /* __NR_unlink */, (long)str_prop_file);
+
+    long pfd = my_syscall3(5 /* __NR_open */, (long)str_prop_file,
+                           0102 /* O_RDWR | O_CREAT */, 0644);
+    if (pfd < 0) {
+        print_str("[-] FAILED: open /dev/__properties__, rc=");
+        print_dec(pfd);
+        print_str("\n");
+        return 0;
+    }
+
+    long r_trunc = my_syscall2(93 /* __NR_ftruncate */, pfd, PA_SIZE);
+    if (r_trunc != 0) {
+        /* Fallback: write PA_SIZE zero bytes */
+        char zbuf[4096];
+        my_memset(zbuf, 0, sizeof(zbuf));
+        for (int i = 0; i < 32; i++) {
+            long wrc = my_syscall3(4 /* __NR_write */, pfd, (long)zbuf, sizeof(zbuf));
+            if (wrc != sizeof(zbuf)) {
+                print_str("[-] FAILED: write /dev/__properties__, rc=");
+                print_dec(wrc);
+                print_str("\n");
+                my_syscall1(6 /* __NR_close */, pfd);
+                return 0;
+            }
+        }
+    }
+
+    void *area = sys_mmap2(0, PA_SIZE, 3 /* PROT_READ|PROT_WRITE */,
+                           1 /* MAP_SHARED */, pfd, 0);
+    my_syscall1(6 /* __NR_close */, pfd);
+
+    if (area == (void *)-1 || (unsigned long)area >= (unsigned long)-4095) {
+        print_str("[-] FAILED: mmap /dev/__properties__, rc=");
+        print_hex((unsigned long)area);
+        print_str("\n");
+        return 0;
+    }
+
+    prop_area_init(area);
+
+    /* Mandatory ro.property_service.version=2 for Android Bionic writev */
+    prop_area_set(area, "ro.property_service.version", "2");
+
+    /* Core platform properties */
+    prop_area_set(area, "ro.build.version.sdk", "28");
+    prop_area_set(area, "ro.build.version.release", "9");
+    prop_area_set(area, "ro.build.version.codename", "REL");
+    prop_area_set(area, "ro.build.version.all_codenames", "REL");
+    prop_area_set(area, "ro.build.version.min_supported_target_sdk", "17");
+    prop_area_set(area, "ro.build.version.security_patch", "2020-12-01");
+    prop_area_set(area, "dalvik.vm.heapgrowthlimit", "128m");
+    prop_area_set(area, "dalvik.vm.heapsize", "256m");
+    prop_area_set(area, "dalvik.vm.heaptargetutilization", "0.75");
+    prop_area_set(area, "dalvik.vm.heapminfree", "512k");
+    prop_area_set(area, "dalvik.vm.heapmaxfree", "8m");
+    prop_area_set(area, "ro.sf.lcd_density", "240");
+    prop_area_set(area, "ro.hardware.egl", "android");
+    prop_area_set(area, "ro.hardware.gralloc", "default");
+    prop_area_set(area, "ro.hardware.hwcomposer", "default");
+    prop_area_set(area, "service.adb.tcp.port", "5555");
+    prop_area_set(area, "ro.kernel.qemu", "0");
+    prop_area_set(area, "ro.debuggable", "1");
+    prop_area_set(area, "ro.secure", "0");
+    prop_area_set(area, "ro.adb.secure", "0");
+    prop_area_set(area, "persist.sys.usb.config", "adb");
+    prop_area_set(area, "ro.build.type", "userdebug");
+    prop_area_set(area, "ro.treble.enabled", "true");
+    prop_area_set(area, "ro.vndk.lite", "true");
+    prop_area_set(area, "persist.sys.dalvik.vm.lib.2", "libart.so");
+    prop_area_set(area, "ro.product.model", "UnionTV");
+    prop_area_set(area, "ro.product.brand", "TCL");
+    prop_area_set(area, "ro.product.name", "UnionTV");
+    prop_area_set(area, "ro.product.device", "UnionTV");
+    prop_area_set(area, "ro.product.cpu.abi", "armeabi-v7a");
+    prop_area_set(area, "ro.product.cpu.abilist", "armeabi-v7a,armeabi");
+    prop_area_set(area, "ro.product.cpu.abilist32", "armeabi-v7a,armeabi");
+    prop_area_set(area, "ro.zygote", "zygote32");
+    prop_area_set(area, "dalvik.vm.boot-image", "/system/framework/arm/boot.art");
+    prop_area_set(area, "dalvik.vm.usejit", "true");
+    prop_area_set(area, "dalvik.vm.isa.arm.variant", "cortex-a7");
+    prop_area_set(area, "dalvik.vm.isa.arm.features", "default");
+    prop_area_set(area, "vold.has_adoptable", "0");
+
+    /* Load system and vendor prop files if present */
+    load_prop_file(area, "/default.prop");
+    load_prop_file(area, "/build.prop");
+    load_prop_file(area, "/vendor/default.prop");
+    load_prop_file(area, "/system/build.prop");
+    load_prop_file(area, "/vendor/build.prop");
+
+    /* Ensure ro.property_service.version remains 2 and ro.adb.secure remains 0 */
+    prop_area_set(area, "ro.property_service.version", "2");
+    prop_area_set(area, "ro.adb.secure", "0");
+    prop_area_set(area, "ro.boot.selinux", "permissive");
+
+    my_syscall3(212 /* __NR_chown32 */, (long)str_prop_file, 0, 0);
+    long r_chmod = my_syscall2(15 /* __NR_chmod */, (long)str_prop_file, 0444);
+    if (r_chmod != 0) {
+        print_str("[-] FAILED: chmod /dev/__properties__, rc=");
+        print_dec(r_chmod);
+        print_str("\n");
+    }
+
+    const char *ver = prop_area_get(area, "ro.property_service.version");
+    if (ver && my_strcmp(ver, "2") == 0) {
+        print_str("[+] Property area initialized at /dev/__properties__ (128 KB trie, ro.property_service.version=2)\n");
+    }
+    return area;
+}
+
+static long my_read_all(long fd, void *buf, unsigned long count) {
+    unsigned char *p = (unsigned char *)buf;
+    unsigned long total = 0;
+    while (total < count) {
+        long r = my_syscall3(3 /* __NR_read */, fd, (long)(p + total), count - total);
+        if (r < 0) {
+            if (r == -4 /* -EINTR */) continue;
+            return r;
+        }
+        if (r == 0) break;
+        total += (unsigned long)r;
+    }
+    return (long)total;
+}
+
+static int start_property_service(void *prop_area) {
+    static const char str_sock_dir[] = "/dev/socket";
+    static const char str_prop_sock[] = "/dev/socket/property_service";
+
+    long r_mkdir = my_syscall2(39 /* __NR_mkdir */, (long)str_sock_dir, 0755);
+    if (r_mkdir != 0 && r_mkdir != -17 /* -EEXIST */) {
+        print_str("[-] FAILED: mkdir /dev/socket, rc=");
+        print_dec(r_mkdir);
+        print_str("\n");
+        return (int)r_mkdir;
+    }
+    my_syscall2(15 /* __NR_chmod */, (long)str_sock_dir, 0755);
+    my_syscall1(10 /* __NR_unlink */, (long)str_prop_sock);
+
+    long sfd = my_syscall3(281 /* __NR_socket */, 1 /* AF_UNIX */, 1 /* SOCK_STREAM */, 0);
+    if (sfd < 0) {
+        print_str("[-] FAILED: socket property_service, rc=");
+        print_dec(sfd);
+        print_str("\n");
+        return (int)sfd;
+    }
+
+    struct my_sockaddr_un sun;
+    my_memset(&sun, 0, sizeof(sun));
+    sun.sun_family = 1; /* AF_UNIX */
+    my_memcpy(sun.sun_path, str_prop_sock, sizeof(str_prop_sock));
+
+    long rc = my_syscall3(282 /* __NR_bind */, sfd, (long)&sun, sizeof(sun));
     if (rc != 0) {
-        print_str("[-] FAILED: chmod /dev/binder, rc=");
+        print_str("[-] FAILED: bind property_service, rc=");
         print_dec(rc);
         print_str("\n");
+        my_syscall1(6 /* __NR_close */, sfd);
         return (int)rc;
     }
 
-    rc = my_syscall0(2 /* __NR_fork */);
+    rc = my_syscall2(15 /* __NR_chmod */, (long)str_prop_sock, 0666);
+    if (rc != 0) {
+        print_str("[-] FAILED: chmod property_service, rc=");
+        print_dec(rc);
+        print_str("\n");
+        my_syscall1(6 /* __NR_close */, sfd);
+        return (int)rc;
+    }
+
+    rc = my_syscall2(284 /* __NR_listen */, sfd, 8);
+    if (rc != 0) {
+        print_str("[-] FAILED: listen property_service, rc=");
+        print_dec(rc);
+        print_str("\n");
+        my_syscall1(6 /* __NR_close */, sfd);
+        return (int)rc;
+    }
+
+    print_str("[+] Property service socket listening on /dev/socket/property_service\n");
+
+    long pid = my_syscall0(2 /* __NR_fork */);
+    if (pid < 0) {
+        print_str("[-] FAILED: fork property_service, rc=");
+        print_dec(pid);
+        print_str("\n");
+        my_syscall1(6 /* __NR_close */, sfd);
+        return (int)pid;
+    }
+    if (pid == 0) {
+        while (1) {
+            long cfd = my_syscall3(285 /* __NR_accept */, sfd, 0, 0);
+            if (cfd < 0) {
+                if (cfd == -4 /* -EINTR */) continue;
+                continue;
+            }
+
+            uint32_t cmd = 0;
+            long r = my_read_all(cfd, &cmd, 4);
+            if (r == 4) {
+                if (cmd == 0x00020001) { /* PROP_MSG_SETPROP2 (writev, version 2) */
+                    uint32_t namelen = 0;
+                    if (my_read_all(cfd, &namelen, 4) == 4 && namelen > 0 && namelen < 512) {
+                        char name[512];
+                        if (my_read_all(cfd, name, namelen) == (long)namelen) {
+                            name[namelen] = '\0';
+                            uint32_t vallen = 0;
+                            char val[512];
+                            val[0] = '\0';
+                            if (my_read_all(cfd, &vallen, 4) == 4 && vallen < 512) {
+                                if (vallen > 0) {
+                                    my_read_all(cfd, val, vallen);
+                                }
+                                val[vallen] = '\0';
+                                int set_rc = prop_area_set(prop_area, name, val);
+                                uint32_t resp = (set_rc == 0) ? 0 : 1; /* 0 = PROP_SUCCESS */
+                                my_syscall3(4 /* __NR_write */, cfd, (long)&resp, 4);
+                            }
+                        }
+                    }
+                } else if (cmd == 1) { /* PROP_MSG_SETPROP (legacy 128 bytes) */
+                    char buf[124];
+                    if (my_read_all(cfd, buf, 124) == 124) {
+                        char name[33];
+                        char val[93];
+                        my_memcpy(name, buf, 32);
+                        name[32] = '\0';
+                        my_memcpy(val, buf + 32, 92);
+                        val[92] = '\0';
+                        int set_rc = prop_area_set(prop_area, name, val);
+                        uint32_t resp = (set_rc == 0) ? 0 : 1;
+                        my_syscall3(4 /* __NR_write */, cfd, (long)&resp, 4);
+                    }
+                }
+            }
+            my_syscall1(6 /* __NR_close */, cfd);
+        }
+        my_syscall1(1 /* __NR_exit */, 0);
+    }
+
+    my_syscall1(6 /* __NR_close */, sfd);
+    return (int)pid;
+}
+
+static int setup_binder_node(const char *path, int minor) {
+    long rc = my_syscall2(15 /* __NR_chmod */, (long)path, 0666);
+    if (rc != 0) {
+        int dev = (10 << 8) | (minor & 0xff);
+        rc = my_syscall3(14 /* __NR_mknod */, (long)path, 0020666 /* S_IFCHR | 0666 */, dev);
+        if (rc != 0 && rc != -17 /* -EEXIST */) {
+            print_str("[-] FAILED: mknod ");
+            print_str(path);
+            print_str(", rc=");
+            print_dec(rc);
+            print_str("\n");
+            return (int)rc;
+        }
+        rc = my_syscall2(15 /* __NR_chmod */, (long)path, 0666);
+        if (rc != 0) {
+            print_str("[-] FAILED: chmod ");
+            print_str(path);
+            print_str(", rc=");
+            print_dec(rc);
+            print_str("\n");
+            return (int)rc;
+        }
+    }
+    return 0;
+}
+
+static int spawn_service_manager(const char *name, const char *cmd, char *const cmd_argv[]) {
+    unsigned int readproc_gid = 3009;
+    long rc = my_syscall0(2 /* __NR_fork */);
     if (rc < 0) {
-        print_str("[-] FAILED: fork servicemanager, rc=");
+        print_str("[-] FAILED: fork ");
+        print_str(name);
+        print_str(", rc=");
         print_dec(rc);
         print_str("\n");
         return (int)rc;
@@ -560,39 +1138,41 @@ static int start_servicemanager(void) {
     if (rc == 0) {
         long child_rc;
 
-        child_rc = my_syscall2(206 /* __NR_setgroups32 */, 1,
-                             (long)&readproc_gid);
+        child_rc = my_syscall2(206 /* __NR_setgroups32 */, 1, (long)&readproc_gid);
         if (child_rc != 0) {
-            print_str("[-] FAILED: servicemanager setgroups32, rc=");
+            print_str("[-] FAILED: ");
+            print_str(name);
+            print_str(" setgroups32, rc=");
             print_dec(child_rc);
             print_str("\n");
             exit_sm_child(125);
         }
-        child_rc = my_syscall3(210 /* __NR_setresgid32 */,
-                              1000, 1000, 1000);
+        child_rc = my_syscall3(210 /* __NR_setresgid32 */, 1000, 1000, 1000);
         if (child_rc != 0) {
-            print_str("[-] FAILED: servicemanager setresgid32, rc=");
+            print_str("[-] FAILED: ");
+            print_str(name);
+            print_str(" setresgid32, rc=");
             print_dec(child_rc);
             print_str("\n");
             exit_sm_child(125);
         }
-        child_rc = my_syscall3(208 /* __NR_setresuid32 */,
-                              1000, 1000, 1000);
+        child_rc = my_syscall3(208 /* __NR_setresuid32 */, 1000, 1000, 1000);
         if (child_rc != 0) {
-            print_str("[-] FAILED: servicemanager setresuid32, rc=");
+            print_str("[-] FAILED: ");
+            print_str(name);
+            print_str(" setresuid32, rc=");
             print_dec(child_rc);
             print_str("\n");
             exit_sm_child(125);
         }
-        child_rc = my_syscall3(11 /* __NR_execve */,
-                              (long)str_servicemanager,
-                              (long)sm_argv, (long)envp);
-        print_str("[-] FAILED: servicemanager execve, rc=");
+        child_rc = my_syscall3(11 /* __NR_execve */, (long)cmd, (long)cmd_argv, (long)envp);
+        print_str("[-] FAILED: ");
+        print_str(name);
+        print_str(" execve, rc=");
         print_dec(child_rc);
         print_str("\n");
         exit_sm_child(127);
     }
-
     return (int)rc;
 }
 
@@ -927,6 +1507,533 @@ static void init_network_and_verify(void) {
     }
 }
 
+static void sync_adb_key(void) {
+    static const char str_root_adb_key[] = "/adb_keys";
+    static const char str_data_adb_key[] = "/data/misc/adb/adb_keys";
+
+    long sfd = my_syscall3(5 /* __NR_open */, (long)str_root_adb_key, 0 /* O_RDONLY */, 0);
+    if (sfd < 0) return;
+
+    char kbuf[2048];
+    long kr = my_syscall3(3 /* __NR_read */, sfd, (long)kbuf, sizeof(kbuf));
+    my_syscall1(6 /* __NR_close */, sfd);
+    if (kr <= 0) return;
+
+    long dfd = my_syscall3(5 /* __NR_open */, (long)str_data_adb_key, 0101 /* O_WRONLY | O_CREAT | O_TRUNC */, 0600);
+    if (dfd >= 0) {
+        my_syscall3(4 /* __NR_write */, dfd, (long)kbuf, kr);
+        my_syscall1(6 /* __NR_close */, dfd);
+        my_syscall2(15 /* __NR_chmod */, (long)str_data_adb_key, 0600);
+        my_syscall3(212 /* __NR_chown32 */, (long)str_data_adb_key, 2000, 2000);
+    }
+}
+
+static int is_android_mode(void) {
+    static const char str_android_flag1[] = "/android_mode";
+    static const char str_android_flag2[] = "/data/android_mode";
+    static const char str_android_flag3[] = "/system/android_mode";
+    if (my_syscall2(33 /* __NR_access */, (long)str_android_flag1, 0 /* F_OK */) == 0) {
+        return 1;
+    }
+    if (my_syscall2(33 /* __NR_access */, (long)str_android_flag2, 0 /* F_OK */) == 0) {
+        return 1;
+    }
+    if (my_syscall2(33 /* __NR_access */, (long)str_android_flag3, 0 /* F_OK */) == 0) {
+        return 1;
+    }
+
+    static const char str_cmdline[] = "/proc/cmdline";
+    long fd = my_syscall3(5 /* __NR_open */, (long)str_cmdline, 0 /* O_RDONLY */, 0);
+    if (fd < 0) return 0;
+    char buf[512];
+    long n = my_syscall3(3 /* __NR_read */, fd, (long)buf, sizeof(buf) - 1);
+    my_syscall1(6 /* __NR_close */, fd);
+    if (n <= 0) return 0;
+    buf[n] = '\0';
+    for (long i = 0; i < n; i++) {
+        if (i <= n - 9 && my_strncmp(buf + i, "android=1", 9) == 0) return 1;
+        if (i <= n - 12 && my_strncmp(buf + i, "mode=android", 12) == 0) return 1;
+        if (i <= n - 24 && my_strncmp(buf + i, "androidboot.mode=android", 24) == 0) return 1;
+    }
+    return 0;
+}
+
+static void prepare_android_runtime_dirs(void) {
+    static const char str_android_flag2[] = "/data/android_mode";
+    long amfd = my_syscall3(5 /* __NR_open */, (long)str_android_flag2, 0102 /* O_CREAT|O_RDWR */, 0644);
+    if (amfd >= 0) my_syscall1(6 /* __NR_close */, amfd);
+
+    static const char str_dalvik[]       = "/data/dalvik-cache";
+    static const char str_dalvik_arm[]   = "/data/dalvik-cache/arm";
+    static const char str_system[]       = "/data/system";
+    static const char str_system_users[] = "/data/system/users";
+    static const char str_user_0_dir[]   = "/data/system/users/0";
+    static const char str_user_dir[]     = "/data/user";
+    static const char str_user_0_link[]  = "/data/user/0";
+    static const char str_data_app[]     = "/data/app";
+    static const char str_data_data[]    = "/data/data";
+    static const char str_data_anr[]     = "/data/anr";
+    static const char str_data_tomb[]    = "/data/tombstones";
+    static const char str_data_local[]   = "/data/local";
+    static const char str_data_tmp[]     = "/data/local/tmp";
+    static const char str_data_misc[]    = "/data/misc";
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_dalvik, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_dalvik, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_dalvik, 0771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_dalvik_arm, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_dalvik_arm, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_dalvik_arm, 0771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_system, 0775);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_system, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_system, 0775);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_system_users, 0775);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_system_users, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_system_users, 0775);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_user_0_dir, 0700);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_user_0_dir, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_user_0_dir, 0700);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_user_dir, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_user_dir, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_user_dir, 0771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_data_data, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_data_data, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_data_data, 0771);
+
+    my_syscall1(10 /* __NR_unlink */, (long)str_user_0_link);
+    my_syscall2(83 /* __NR_symlink */, (long)str_data_data, (long)str_user_0_link);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_data_app, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_data_app, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_data_app, 0771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_data_anr, 0775);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_data_anr, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_data_anr, 0775);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_data_tomb, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_data_tomb, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_data_tomb, 0771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_data_local, 0751);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_data_local, 0, 0);
+    my_syscall2(15 /* __NR_chmod */, (long)str_data_local, 0751);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_data_tmp, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_data_tmp, 2000, 2000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_data_tmp, 0771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_data_misc, 01771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_data_misc, 1000, 9998);
+    my_syscall2(15 /* __NR_chmod */, (long)str_data_misc, 01771);
+
+    static const char str_cpuset[]        = "/dev/cpuset";
+    static const char str_cpuset_fg[]     = "/dev/cpuset/foreground";
+    static const char str_cpuset_tasks[]  = "/dev/cpuset/foreground/tasks";
+    static const char str_root_tasks[]    = "/dev/cpuset/tasks";
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_cpuset, 0755);
+    my_syscall2(39 /* __NR_mkdir */, (long)str_cpuset_fg, 0755);
+
+    long tfd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_tasks, 0102 /* O_CREAT|O_RDWR */, 0666);
+    if (tfd >= 0) my_syscall1(6 /* __NR_close */, tfd);
+    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_tasks, 0666);
+
+    long rtfd = my_syscall3(5 /* __NR_open */, (long)str_root_tasks, 0102 /* O_CREAT|O_RDWR */, 0666);
+    if (rtfd >= 0) my_syscall1(6 /* __NR_close */, rtfd);
+    my_syscall2(15 /* __NR_chmod */, (long)str_root_tasks, 0666);
+}
+
+static int spawn_zygote(void) {
+    static const char str_zygote_sock[] = "/dev/socket/zygote";
+    my_syscall1(10 /* __NR_unlink */, (long)str_zygote_sock);
+
+    long sfd = my_syscall3(281 /* __NR_socket */, 1 /* AF_UNIX */, 1 /* SOCK_STREAM */, 0);
+    if (sfd < 0) {
+        print_str("[-] FAILED: socket zygote, rc=");
+        print_dec(sfd);
+        print_str("\n");
+        return (int)sfd;
+    }
+
+    long r_dup = my_syscall2(63 /* __NR_dup2 */, sfd, 3);
+    if (r_dup < 0) {
+        print_str("[-] FAILED: dup2 zygote socket to fd 3, rc=");
+        print_dec(r_dup);
+        print_str("\n");
+        my_syscall1(6 /* __NR_close */, sfd);
+        return (int)r_dup;
+    }
+    if (sfd != 3) {
+        my_syscall1(6 /* __NR_close */, sfd);
+    }
+
+    struct my_sockaddr_un sun;
+    my_memset(&sun, 0, sizeof(sun));
+    sun.sun_family = 1; /* AF_UNIX */
+    my_memcpy(sun.sun_path, str_zygote_sock, sizeof(str_zygote_sock));
+
+    long rc = my_syscall3(282 /* __NR_bind */, 3, (long)&sun, sizeof(sun));
+    if (rc != 0) {
+        print_str("[-] FAILED: bind zygote socket, rc=");
+        print_dec(rc);
+        print_str("\n");
+        my_syscall1(6 /* __NR_close */, 3);
+        return (int)rc;
+    }
+
+    my_syscall2(15 /* __NR_chmod */, (long)str_zygote_sock, 0660);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_zygote_sock, 0, 1000 /* system */);
+
+    rc = my_syscall2(284 /* __NR_listen */, 3, 16);
+    if (rc != 0) {
+        print_str("[-] FAILED: listen zygote socket, rc=");
+        print_dec(rc);
+        print_str("\n");
+        my_syscall1(6 /* __NR_close */, 3);
+        return (int)rc;
+    }
+
+    print_str("[+] Zygote socket listening on /dev/socket/zygote (fd 3)\n");
+
+    long pid = my_syscall0(2 /* __NR_fork */);
+    if (pid < 0) {
+        print_str("[-] FAILED: fork zygote, rc=");
+        print_dec(pid);
+        print_str("\n");
+        return (int)pid;
+    }
+
+    if (pid == 0) {
+        static const char str_app_process[]  = "/system/bin/app_process";
+        static const char str_xzygote[]      = "-Xzygote";
+        static const char str_system_bin[]   = "/system/bin";
+        static const char str_zygote_flag[]  = "--zygote";
+        static const char str_start_ss[]     = "--start-system-server";
+
+        char *const z_argv[] = {
+            (char *)str_app_process,
+            (char *)str_xzygote,
+            (char *)str_system_bin,
+            (char *)str_zygote_flag,
+            (char *)str_start_ss,
+            0
+        };
+
+        static const char *const z_envp[] = {
+            "PATH=/sbin:/system/sbin:/system/bin:/system/xbin:/vendor/bin",
+            "ANDROID_ROOT=/system",
+            "ANDROID_DATA=/data",
+            "ANDROID_STORAGE=/storage",
+            "ANDROID_BOOTLOGO=1",
+            "BOOTCLASSPATH=/system/framework/core-oj.jar:/system/framework/core-libart.jar:/system/framework/conscrypt.jar:/system/framework/okhttp.jar:/system/framework/bouncycastle.jar:/system/framework/apache-xml.jar:/system/framework/ext.jar:/system/framework/framework.jar:/system/framework/telephony-common.jar:/system/framework/voip-common.jar:/system/framework/ims-common.jar:/system/framework/android.hidl.base-V1.0-java.jar:/system/framework/android.hidl.manager-V1.0-java.jar:/system/framework/framework-oahl-backward-compatibility.jar:/system/framework/android.test.base.jar:/system/framework/tcl.resource.jar",
+            "SYSTEMSERVERCLASSPATH=/system/framework/services.jar:/system/framework/ethernet-service.jar:/system/framework/wifi-service.jar",
+            "ANDROID_SOCKET_zygote=3",
+            0
+        };
+
+        long exec_rc = my_syscall3(11 /* __NR_execve */, (long)str_app_process,
+                                   (long)z_argv, (long)z_envp);
+        print_str("[-] FAILED: execve zygote failed, rc=");
+        print_dec(exec_rc);
+        print_str("\n");
+        my_syscall1(1 /* __NR_exit */, 127);
+    }
+
+    my_syscall1(6 /* __NR_close */, 3);
+    print_str("[*] zygote child spawned, pid=");
+    print_dec(pid);
+    print_str("\n");
+    return (int)pid;
+}
+
+static int spawn_installd(void) {
+    static const char str_installd_sock[] = "/dev/socket/installd";
+    my_syscall1(10 /* __NR_unlink */, (long)str_installd_sock);
+
+    long sfd = my_syscall3(281 /* __NR_socket */, 1 /* AF_UNIX */, 1 /* SOCK_STREAM */, 0);
+    if (sfd < 0) {
+        print_str("[-] FAILED: socket installd, rc=");
+        print_dec(sfd);
+        print_str("\n");
+        return (int)sfd;
+    }
+
+    long r_dup = my_syscall2(63 /* __NR_dup2 */, sfd, 3);
+    if (r_dup < 0) {
+        print_str("[-] FAILED: dup2 installd socket to fd 3, rc=");
+        print_dec(r_dup);
+        print_str("\n");
+        my_syscall1(6 /* __NR_close */, sfd);
+        return (int)r_dup;
+    }
+    if (sfd != 3) {
+        my_syscall1(6 /* __NR_close */, sfd);
+    }
+
+    struct my_sockaddr_un sun;
+    my_memset(&sun, 0, sizeof(sun));
+    sun.sun_family = 1; /* AF_UNIX */
+    my_memcpy(sun.sun_path, str_installd_sock, sizeof(str_installd_sock));
+
+    long rc = my_syscall3(282 /* __NR_bind */, 3, (long)&sun, sizeof(sun));
+    if (rc != 0) {
+        print_str("[-] FAILED: bind installd socket, rc=");
+        print_dec(rc);
+        print_str("\n");
+        my_syscall1(6 /* __NR_close */, 3);
+        return (int)rc;
+    }
+
+    my_syscall2(15 /* __NR_chmod */, (long)str_installd_sock, 0660);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_installd_sock, 0, 1000 /* system */);
+
+    rc = my_syscall2(284 /* __NR_listen */, 3, 16);
+    if (rc != 0) {
+        print_str("[-] FAILED: listen installd socket, rc=");
+        print_dec(rc);
+        print_str("\n");
+        my_syscall1(6 /* __NR_close */, 3);
+        return (int)rc;
+    }
+
+    print_str("[+] installd socket listening on /dev/socket/installd (fd 3)\n");
+
+    long pid = my_syscall0(2 /* __NR_fork */);
+    if (pid < 0) {
+        print_str("[-] FAILED: fork installd, rc=");
+        print_dec(pid);
+        print_str("\n");
+        return (int)pid;
+    }
+
+    if (pid == 0) {
+        static const char str_installd[] = "/system/bin/installd";
+        char *const inst_argv[] = {(char *)str_installd, 0};
+        static const char *const inst_envp[] = {
+            "PATH=/sbin:/system/sbin:/system/bin:/system/xbin:/vendor/bin",
+            "ANDROID_ROOT=/system",
+            "ANDROID_DATA=/data",
+            "ANDROID_STORAGE=/storage",
+            "ANDROID_SOCKET_installd=3",
+            0
+        };
+        long exec_rc = my_syscall3(11 /* __NR_execve */, (long)str_installd,
+                                   (long)inst_argv, (long)inst_envp);
+        print_str("[-] FAILED: execve installd failed, rc=");
+        print_dec(exec_rc);
+        print_str("\n");
+        my_syscall1(1 /* __NR_exit */, 127);
+    }
+
+    my_syscall1(6 /* __NR_close */, 3);
+    print_str("[*] installd child spawned, pid=");
+    print_dec(pid);
+    print_str("\n");
+    return (int)pid;
+}
+
+struct my_timespec {
+    long tv_sec;
+    long tv_nsec;
+};
+
+static inline void my_sleep_ms(long ms) {
+    struct my_timespec req;
+    req.tv_sec = ms / 1000;
+    req.tv_nsec = (ms % 1000) * 1000000L;
+    my_syscall2(162 /* __NR_nanosleep */, (long)&req, 0);
+}
+
+static void load_selinux_policy(void) {
+    static const char str_sepolicy_path[]   = "/vendor/etc/selinux/precompiled_sepolicy";
+    static const char str_selinux_load[]    = "/sys/fs/selinux/load";
+    static const char str_selinux_enforce[] = "/sys/fs/selinux/enforce";
+
+    long sp_fd = my_syscall3(5 /* __NR_open */, (long)str_sepolicy_path, 0 /* O_RDONLY */, 0);
+    if (sp_fd < 0) {
+        print_str("[-] FAILED: open precompiled_sepolicy, rc=");
+        print_dec(sp_fd);
+        print_str("\n");
+        return;
+    }
+
+    long pol_size = my_syscall3(19 /* __NR_lseek */, sp_fd, 0, 2 /* SEEK_END */);
+    my_syscall3(19 /* __NR_lseek */, sp_fd, 0, 0 /* SEEK_SET */);
+    if (pol_size <= 0) {
+        print_str("[-] FAILED: lseek sepolicy, size=");
+        print_dec(pol_size);
+        print_str("\n");
+        my_syscall1(6 /* __NR_close */, sp_fd);
+        return;
+    }
+
+    void *pol_map = (void *)my_syscall6(192 /* __NR_mmap2 */, 0, pol_size, 1 /* PROT_READ */, 2 /* MAP_PRIVATE */, sp_fd, 0);
+    if ((unsigned long)pol_map >= (unsigned long)-4095L) {
+        print_str("[-] FAILED: mmap sepolicy, rc=");
+        print_dec((long)pol_map);
+        print_str("\n");
+        my_syscall1(6 /* __NR_close */, sp_fd);
+        return;
+    }
+
+    long load_fd = my_syscall3(5 /* __NR_open */, (long)str_selinux_load, 1 /* O_WRONLY */, 0);
+    if (load_fd >= 0) {
+        long wr = my_syscall3(4 /* __NR_write */, load_fd, (long)pol_map, pol_size);
+        my_syscall1(6 /* __NR_close */, load_fd);
+        if (wr == pol_size) {
+            print_str("[+] Loaded precompiled_sepolicy into /sys/fs/selinux/load (");
+            print_dec(pol_size);
+            print_str(" bytes)\n");
+        } else {
+            print_str("[-] FAILED: write /sys/fs/selinux/load, rc=");
+            print_dec(wr);
+            print_str("\n");
+        }
+    } else {
+        print_str("[-] FAILED: open /sys/fs/selinux/load, rc=");
+        print_dec(load_fd);
+        print_str("\n");
+    }
+
+    my_syscall2(91 /* __NR_munmap */, (long)pol_map, pol_size);
+    my_syscall1(6 /* __NR_close */, sp_fd);
+
+    /* Enforce permissive mode */
+    long enf_fd = my_syscall3(5 /* __NR_open */, (long)str_selinux_enforce, 1 /* O_WRONLY */, 0);
+    if (enf_fd >= 0) {
+        long wr = my_syscall3(4 /* __NR_write */, enf_fd, (long)"0", 1);
+        my_syscall1(6 /* __NR_close */, enf_fd);
+        if (wr == 1) {
+            print_str("[+] Switched SELinux to permissive mode (/sys/fs/selinux/enforce = 0)\n");
+        } else {
+            print_str("[-] FAILED: write /sys/fs/selinux/enforce, rc=");
+            print_dec(wr);
+            print_str("\n");
+        }
+    } else {
+        print_str("[-] FAILED: open /sys/fs/selinux/enforce, rc=");
+        print_dec(enf_fd);
+        print_str("\n");
+    }
+}
+
+static const unsigned char default_panel_param[140] = {
+    0x05, 0x30, 0x96, 0x00, 0x32, 0x00, 0x3c, 0x00, 0x20, 0xee, 0xd9, 0x08, 0x98, 0x08, 0x65, 0x04,
+    0x2c, 0x05, 0x94, 0x00, 0x14, 0x08, 0x24, 0x00, 0x5c, 0x04, 0x00, 0x3c, 0xc0, 0x21, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x32, 0x00, 0xc8, 0x00, 0xc8, 0x00, 0x28, 0x00, 0xe8, 0x03, 0x10, 0x27,
+    0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xb9, 0x04, 0xa8, 0x02, 0x78, 0x00, 0x64, 0x00, 0x78, 0x00, 'T',  'C',  'L',  '_',  'R',  'T',
+    '4',  '1',  '_',  'F',  'H',  'D',  '_',  'P',  'A',  'N',  'E',  'L',  0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+
+static void setup_panel_parameter(void) {
+    static const char str_panel_file[] = "/tmp/panel_parameter";
+    static const char str_sys_panel1[] = "/sys/realtek_boards/panel_parameter";
+    static const char str_sys_panel2[] = "/sys/devices/platform/rtd284x_boards/panel_parameter";
+
+    long fd = my_syscall3(5 /* __NR_open */, (long)str_panel_file, 0101 /* O_WRONLY|O_CREAT|O_TRUNC */, 0644);
+    if (fd < 0) {
+        print_str("[-] FAILED: open /tmp/panel_parameter, rc=");
+        print_dec(fd);
+        print_str("\n");
+        return;
+    }
+    long wr = my_syscall3(4 /* __NR_write */, fd, (long)default_panel_param, sizeof(default_panel_param));
+    my_syscall1(6 /* __NR_close */, fd);
+    if (wr != sizeof(default_panel_param)) {
+        print_str("[-] FAILED: write /tmp/panel_parameter, rc=");
+        print_dec(wr);
+        print_str("\n");
+        return;
+    }
+
+    long m1 = my_syscall5(21 /* __NR_mount */, (long)str_panel_file, (long)str_sys_panel1, 0, 4096 /* MS_BIND */, 0);
+    if (m1 == 0) {
+        print_str("[+] Bound synthetic panel_parameter -> /sys/realtek_boards/panel_parameter\n");
+    } else {
+        print_str("[-] WARNING: mount bind /sys/realtek_boards/panel_parameter, rc=");
+        print_dec(m1);
+        print_str("\n");
+    }
+
+    long m2 = my_syscall5(21 /* __NR_mount */, (long)str_panel_file, (long)str_sys_panel2, 0, 4096 /* MS_BIND */, 0);
+    if (m2 == 0) {
+        print_str("[+] Bound synthetic panel_parameter -> /sys/devices/platform/rtd284x_boards/panel_parameter\n");
+    }
+}
+
+static void setup_software_egl(void) {
+    static const char str_gles_sw[]      = "/system/lib/egl/libGLES_software.so";
+    static const char str_gles_android[] = "/system/lib/egl/libGLES_android.so";
+    static const char str_gles_mali[]    = "/vendor/lib/egl/libGLES_mali.so";
+    static const char str_gles_vendor[]  = "/vendor/lib/egl/libGLES.so";
+
+    const char *src = str_gles_android;
+    long fd = my_syscall3(5 /* __NR_open */, (long)str_gles_sw, 0 /* O_RDONLY */, 0);
+    if (fd >= 0) {
+        my_syscall1(6 /* __NR_close */, fd);
+        src = str_gles_sw;
+        print_str("[+] Found custom software GLES 2.0 driver at /system/lib/egl/libGLES_software.so\n");
+    }
+
+    long m1 = my_syscall5(21 /* __NR_mount */, (long)src, (long)str_gles_mali, 0, 4096 /* MS_BIND */, 0);
+    if (m1 == 0) {
+        print_str("[+] Bound software GLES -> /vendor/lib/egl/libGLES_mali.so\n");
+    } else {
+        print_str("[-] WARNING: mount bind libGLES_mali.so, rc=");
+        print_dec(m1);
+        print_str("\n");
+    }
+
+    long m2 = my_syscall5(21 /* __NR_mount */, (long)src, (long)str_gles_vendor, 0, 4096 /* MS_BIND */, 0);
+    if (m2 == 0) {
+        print_str("[+] Bound software GLES -> /vendor/lib/egl/libGLES.so\n");
+    }
+
+    long m3 = my_syscall5(21 /* __NR_mount */, (long)src, (long)str_gles_android, 0, 4096 /* MS_BIND */, 0);
+    if (m3 == 0) {
+        print_str("[+] Bound software GLES -> /system/lib/egl/libGLES_android.so\n");
+    }
+}
+
+static void disable_vendor_hwc(void) {
+    static const char str_hwc_video[]     = "/vendor/lib/hw/hwcomposer.video.so";
+    static const char str_hwc_video_dis[] = "/vendor/lib/hw/hwcomposer.video.so.disabled";
+    static const char str_hwc_rtd[]       = "/vendor/lib/hw/hwcomposer.rtd284x.so";
+    static const char str_hwc_rtd_dis[]   = "/vendor/lib/hw/hwcomposer.rtd284x.so.disabled";
+    static const char str_hwc_grp[]       = "/vendor/lib/hw/hwcomposer.graphic.rtd284x.so";
+    static const char str_hwc_grp_dis[]   = "/vendor/lib/hw/hwcomposer.graphic.rtd284x.so.disabled";
+
+    long r1 = my_syscall2(38 /* __NR_rename */, (long)str_hwc_video, (long)str_hwc_video_dis);
+    long r2 = my_syscall2(38 /* __NR_rename */, (long)str_hwc_rtd, (long)str_hwc_rtd_dis);
+    long r3 = my_syscall2(38 /* __NR_rename */, (long)str_hwc_grp, (long)str_hwc_grp_dis);
+    if (r1 == 0 || r2 == 0) {
+        print_str("[+] Disabled vendor HWC modules to trigger HWC2OnFbAdapter fallback\n");
+    } else {
+        print_str("[-] WARNING: rename vendor HWC modules failed (r1=");
+        print_dec(r1);
+        print_str(", r2=");
+        print_dec(r2);
+        print_str(", r3=");
+        print_dec(r3);
+        print_str("), binding non-ELF dummy over vendor HWC\n");
+        static const char str_dummy[] = "/tmp/panel_parameter";
+        my_syscall5(21 /* __NR_mount */, (long)str_dummy, (long)str_hwc_video, 0, 4096 /* MS_BIND */, 0);
+        my_syscall5(21 /* __NR_mount */, (long)str_dummy, (long)str_hwc_rtd, 0, 4096 /* MS_BIND */, 0);
+        my_syscall5(21 /* __NR_mount */, (long)str_dummy, (long)str_hwc_grp, 0, 4096 /* MS_BIND */, 0);
+    }
+}
+
 void _start(void) {
     /* 1. Establish session and controlling terminal */
     my_syscall0(66 /* __NR_setsid */);
@@ -952,6 +2059,11 @@ void _start(void) {
         }
     }
 
+    static const char str_selinuxfs[]   = "selinuxfs";
+    static const char str_selinux_path[]= "/sys/fs/selinux";
+    my_syscall2(39 /* __NR_mkdir */, (long)str_selinux_path, 0755);
+    check_mount(str_selinuxfs, str_selinux_path, str_selinuxfs, 0, 0);
+
     /* 3. Mount /dev/pts */
     my_syscall2(39 /* __NR_mkdir */, (long)str_devpts_path, 0755);
     int r_pts = check_mount(str_devpts, str_devpts_path, str_devpts, 0, 0);
@@ -964,11 +2076,26 @@ void _start(void) {
     int r_vendor = check_mount(str_vendor_dev, str_vendor_path, str_ext4, 0, 0);
     if (r_vendor == 0) {
         my_syscall3(4, 1, (long)msg_mount_vendor, sizeof(msg_mount_vendor) - 1);
+
+        /* Load genuine precompiled SELinux policy from vendor partition */
+        load_selinux_policy();
+
+        /* Bind mount software GLES implementation over non-emulated Mali libraries */
+        setup_software_egl();
+
+        /* Disable non-functional vendor HWC modules to trigger AOSP HWC2OnFbAdapter fallback */
+        disable_vendor_hwc();
     }
 
-    /* 5. Mount tmpfs on /data, /cache, /tmp, /mnt, /storage */
-    my_syscall2(39, (long)str_data_path, 0771);
-    int r_data = check_mount(str_tmpfs, str_data_path, str_tmpfs, 0, 0);
+    /* 5. Mount ext4 on /data from /dev/mmcblk0p3, fallback to tmpfs */
+    my_syscall2(39 /* __NR_mkdir */, (long)str_data_path, 0771);
+    int r_data = check_mount(str_data_dev, str_data_path, str_ext4, 0, 0);
+    if (r_data == 0) {
+        my_syscall3(4, 1, (long)msg_mount_data, sizeof(msg_mount_data) - 1);
+    } else {
+        print_str("[-] WARNING: /data mount on /dev/mmcblk0p3 failed, falling back to tmpfs\n");
+        check_mount(str_tmpfs, str_data_path, str_tmpfs, 0, 0);
+    }
 
     my_syscall2(39, (long)str_cache_path, 0770);
     int r_cache = check_mount(str_tmpfs, str_cache_path, str_tmpfs, 0, 0);
@@ -982,20 +2109,91 @@ void _start(void) {
     my_syscall2(39, (long)str_storage_path, 0755);
     int r_storage = check_mount(str_tmpfs, str_storage_path, str_tmpfs, 0, 0);
 
-    if (r_data == 0 && r_cache == 0 && r_tmp == 0 && r_mnt == 0 && r_storage == 0) {
+    if (r_cache == 0 && r_tmp == 0 && r_mnt == 0 && r_storage == 0) {
         my_syscall3(4, 1, (long)msg_mount_tmpfs, sizeof(msg_mount_tmpfs) - 1);
     }
+
+    /* Set up synthetic panel parameter in sysfs for librtk_hal_panel and HWC */
+    setup_panel_parameter();
 
     /* 6. Set up Android compatibility symlinks */
     my_syscall2(83 /* __NR_symlink */, (long)str_system_etc, (long)str_etc);
     my_syscall2(83 /* __NR_symlink */, (long)str_vendor_odm, (long)str_odm);
     my_syscall2(83 /* __NR_symlink */, (long)str_system_prod, (long)str_product);
 
-    int sm_pid = start_servicemanager();
+    static const char str_ld_vndk_lite[] = "/system/etc/ld.config.vndk_lite.txt";
+    static const char str_ld_config[]    = "/system/etc/ld.config.txt";
+    my_syscall2(83 /* __NR_symlink */, (long)str_ld_vndk_lite, (long)str_ld_config);
+
+    /* 7. Setup device nodes and permissions */
+    setup_binder_node(str_binder, 60);
+    setup_binder_node(str_hwbinder, 59);
+    setup_binder_node(str_vndbinder, 58);
+    my_syscall2(15 /* __NR_chmod */, (long)str_urandom, 0666);
+
+    /* Graphics and shared memory nodes for SurfaceFlinger & HWC */
+    static const char str_graphics_dir[] = "/dev/graphics";
+    static const char str_graphics_fb0[] = "/dev/graphics/fb0";
+    static const char str_ashmem[]       = "/dev/ashmem";
+    static const char str_sw_sync[]      = "/dev/sw_sync";
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_graphics_dir, 0755);
+    my_syscall2(83 /* __NR_symlink */, (long)str_fb_path, (long)str_graphics_fb0);
+    my_syscall2(15 /* __NR_chmod */, (long)str_fb_path, 0666);
+    my_syscall2(15 /* __NR_chmod */, (long)str_ashmem, 0666);
+    my_syscall2(15 /* __NR_chmod */, (long)str_sw_sync, 0666);
+
+    /* 8. Prepare directory hierarchies */
+    static const char str_xbin_su[] = "/xbin/su";
+    my_syscall2(39 /* __NR_mkdir */, (long)str_xbin_path, 0755);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_su_path, 0, 0);
+    my_syscall2(15 /* __NR_chmod */, (long)str_su_path, 06755);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_xbin_su, 0, 0);
+    my_syscall2(15 /* __NR_chmod */, (long)str_xbin_su, 06755);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_misc_path, 0771);
+    my_syscall2(39 /* __NR_mkdir */, (long)str_adb_path, 0770);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_adb_path, 2000, 2000);
+    sync_adb_key();
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_local_path, 0771);
+    my_syscall2(39 /* __NR_mkdir */, (long)str_tmp_local_path, 0777);
+    my_syscall2(15 /* __NR_chmod */, (long)str_tmp_local_path, 0777);
+
+    /* 9. Initialize Android Property Area & Property Service */
+    void *prop_area = init_properties_area();
+    if (prop_area) {
+        int prop_pid = start_property_service(prop_area);
+        if (prop_pid > 0) {
+            print_str("[*] property_service child spawned, pid=");
+            print_dec(prop_pid);
+            print_str("\n");
+        }
+    }
+
+    /* 10. Spawn Context Managers */
+    char *sm_argv[] = {(char *)str_servicemanager, 0};
+    int sm_pid = spawn_service_manager("servicemanager", str_servicemanager, sm_argv);
     if (sm_pid > 0) {
         print_str("[*] servicemanager child spawned, pid=");
         print_dec(sm_pid);
         print_str("; Binder readiness requires a client probe\n");
+    }
+
+    char *hwsm_argv[] = {(char *)str_hwservicemanager, 0};
+    int hwsm_pid = spawn_service_manager("hwservicemanager", str_hwservicemanager, hwsm_argv);
+    if (hwsm_pid > 0) {
+        print_str("[*] hwservicemanager child spawned, pid=");
+        print_dec(hwsm_pid);
+        print_str("; HwBinder readiness requires a client probe\n");
+    }
+
+    char *vndsm_argv[] = {(char *)str_vndservicemanager, (char *)str_vndbinder, 0};
+    int vndsm_pid = spawn_service_manager("vndservicemanager", str_vndservicemanager, vndsm_argv);
+    if (vndsm_pid > 0) {
+        print_str("[*] vndservicemanager child spawned, pid=");
+        print_dec(vndsm_pid);
+        print_str("; VndBinder readiness requires a client probe\n");
     }
 
     /* 7. Initialize Network Subsystem (eth0, DHCP, DNS, Live Outbound Tests) */
@@ -1011,56 +2209,118 @@ void _start(void) {
         print_str("; TCP and authentication require an ADB probe\n");
     }
 
-    /* 8. Take over /dev/fb0 with high-definition TCL Smart TV Dashboard */
-    paint_tcl_tv_display();
-    my_syscall3(4, 1, (long)msg_paint_fb, sizeof(msg_paint_fb) - 1);
+    if (is_android_mode()) {
+        print_str("[+] Boot mode: Android Userspace (disabling diagnostic dashboard and fb_test)\n");
+        prepare_android_runtime_dirs();
 
-    /* 8. Run interactive TV remote control session (receives Cocoa window keys) */
-    static const char str_fb_test[] = "/bin/fb_test";
-    static const char str_loop[] = "--loop";
-    static char *fb_argv[] = {(char*)str_fb_test, (char*)str_loop, 0};
-
-    long pid = my_syscall0(2 /* __NR_fork */);
-    if (pid == 0) {
-        my_syscall3(11 /* __NR_execve */, (long)str_fb_test, (long)fb_argv, (long)envp);
-        my_syscall1(1 /* __NR_exit */, 127);
-    }
-    if (pid > 0) {
-        int status = 0;
-        long ret;
-        do {
-            ret = my_syscall4(114 /* __NR_wait4 */, pid, (long)&status, 0, 0);
-        } while (ret == -4 /* -EINTR */);
-        if (ret < 0) {
-            print_str("[-] FAILED: wait4 failed for fb_test, rc=");
-            print_dec(ret);
-            print_str("\n");
-        } else if (WIFEXITED(status)) {
-            int code = WEXITSTATUS(status);
-            if (code != 0) {
-                print_str("[-] fb_test process exited with status ");
-                print_dec(code);
-                print_str("\n");
-            } else {
-                print_str("[+] fb_test process exited cleanly (status 0)\n");
-            }
-        } else if (WIFSIGNALED(status)) {
-            int sig = WTERMSIG(status);
-            print_str("[-] fb_test process killed by signal ");
-            print_dec(sig);
+        /* Spawn Graphics HALs */
+        static const char str_configstore[] = "/vendor/bin/hw/android.hardware.configstore@1.1-service";
+        static char *cs_argv[] = {(char *)str_configstore, 0};
+        int cs_pid = run_process(str_configstore, cs_argv, 0);
+        if (cs_pid > 0) {
+            print_str("[*] configstore HAL spawned, pid=");
+            print_dec(cs_pid);
             print_str("\n");
         }
-    } else if (pid < 0) {
-        print_str("[-] FAILED: fork failed for fb_test, rc=");
-        print_dec(pid);
-        print_str("\n");
-    }
 
-    /* 9. Launch interactive root shell on exit */
-    my_syscall3(4, 1, (long)msg_exec_sh, sizeof(msg_exec_sh) - 1);
-    my_syscall3(11 /* __NR_execve */, (long)str_sh, (long)argv, (long)envp);
+        static const char str_allocator[] = "/vendor/bin/hw/android.hardware.graphics.allocator@2.0-service";
+        static char *alloc_argv[] = {(char *)str_allocator, 0};
+        int alloc_pid = run_process(str_allocator, alloc_argv, 0);
+        if (alloc_pid > 0) {
+            print_str("[*] graphics.allocator HAL spawned, pid=");
+            print_dec(alloc_pid);
+            print_str("\n");
+        }
 
-    while (1) {
-        my_syscall3(29 /* __NR_pause */, 0, 0, 0);
+        static const char str_composer[] = "/vendor/bin/hw/android.hardware.graphics.composer@2.1-service";
+        static char *comp_argv[] = {(char *)str_composer, 0};
+        int comp_pid = run_process(str_composer, comp_argv, 0);
+        if (comp_pid > 0) {
+            print_str("[*] graphics.composer HAL spawned, pid=");
+            print_dec(comp_pid);
+            print_str("\n");
+        }
+
+        /* Allow graphics HALs to initialize IPC before SurfaceFlinger starts */
+        my_sleep_ms(1500);
+
+        /* Spawn SurfaceFlinger */
+        static const char str_surfaceflinger[] = "/system/bin/surfaceflinger";
+        static char *sf_argv[] = {(char *)str_surfaceflinger, 0};
+        int sf_pid = run_process(str_surfaceflinger, sf_argv, 0);
+        if (sf_pid > 0) {
+            print_str("[*] SurfaceFlinger spawned, pid=");
+            print_dec(sf_pid);
+            print_str("\n");
+        }
+
+        /* Spawn installd */
+        spawn_installd();
+
+        /* Spawn Zygote */
+        spawn_zygote();
+
+        /* Enter PID 1 child reaping loop */
+        while (1) {
+            int status = 0;
+            long r = my_syscall4(114 /* __NR_wait4 */, -1, (long)&status, 1 /* WNOHANG */, 0);
+            if (r > 0) {
+                continue;
+            }
+            my_syscall3(29 /* __NR_pause */, 0, 0, 0);
+        }
+    } else {
+        /* Diagnostic Mode: Take over /dev/fb0 with high-definition TCL Smart TV Dashboard */
+        paint_tcl_tv_display();
+        my_syscall3(4, 1, (long)msg_paint_fb, sizeof(msg_paint_fb) - 1);
+
+        /* Run interactive TV remote control session (receives Cocoa window keys) */
+        static const char str_fb_test[] = "/bin/fb_test";
+        static const char str_loop[] = "--loop";
+        static char *fb_argv[] = {(char*)str_fb_test, (char*)str_loop, 0};
+
+        long pid = my_syscall0(2 /* __NR_fork */);
+        if (pid == 0) {
+            my_syscall3(11 /* __NR_execve */, (long)str_fb_test, (long)fb_argv, (long)envp);
+            my_syscall1(1 /* __NR_exit */, 127);
+        }
+        if (pid > 0) {
+            int status = 0;
+            long ret;
+            do {
+                ret = my_syscall4(114 /* __NR_wait4 */, pid, (long)&status, 0, 0);
+            } while (ret == -4 /* -EINTR */);
+            if (ret < 0) {
+                print_str("[-] FAILED: wait4 failed for fb_test, rc=");
+                print_dec(ret);
+                print_str("\n");
+            } else if (WIFEXITED(status)) {
+                int code = WEXITSTATUS(status);
+                if (code != 0) {
+                    print_str("[-] fb_test process exited with status ");
+                    print_dec(code);
+                    print_str("\n");
+                } else {
+                    print_str("[+] fb_test process exited cleanly (status 0)\n");
+                }
+            } else if (WIFSIGNALED(status)) {
+                int sig = WTERMSIG(status);
+                print_str("[-] fb_test process killed by signal ");
+                print_dec(sig);
+                print_str("\n");
+            }
+        } else if (pid < 0) {
+            print_str("[-] FAILED: fork failed for fb_test, rc=");
+            print_dec(pid);
+            print_str("\n");
+        }
+
+        /* Launch interactive root shell on exit */
+        my_syscall3(4, 1, (long)msg_exec_sh, sizeof(msg_exec_sh) - 1);
+        my_syscall3(11 /* __NR_execve */, (long)str_sh, (long)argv, (long)envp);
+
+        while (1) {
+            my_syscall3(29 /* __NR_pause */, 0, 0, 0);
+        }
     }
 }
