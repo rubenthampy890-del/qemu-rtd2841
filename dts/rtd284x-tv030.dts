@@ -167,7 +167,7 @@
 		#address-cells = <1>;
 		#size-cells = <1>;
 		ranges;
-		bootargs ="androidboot.console=ttyS0 console=ttyS0,115200 ignore_loglevel initcall_debug flashtype=emmc earlyprintk root=/dev/mmcblk0p1 rootfstype=ext4 rw rootwait";
+		bootargs ="androidboot.console=ttyS0 console=ttyS0,115200 ignore_loglevel initcall_debug flashtype=emmc earlyprintk root=/dev/mmcblk0p1 rootfstype=ext4 rw rootwait fbcon=map:9";
 		framebuffer0: framebuffer@3e000000 {
 			compatible = "simple-framebuffer";
 			reg = <0x3e000000 0x00800000>;

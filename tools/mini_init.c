@@ -1578,6 +1578,24 @@ static void prepare_android_runtime_dirs(void) {
     static const char str_data_tmp[]     = "/data/local/tmp";
     static const char str_data_misc[]    = "/data/misc";
 
+    static const char str_res_cache[]    = "/data/resource-cache";
+    static const char str_user_de[]      = "/data/user_de";
+    static const char str_user_de_0[]    = "/data/user_de/0";
+    static const char str_system_de[]    = "/data/system_de";
+    static const char str_system_ce[]    = "/data/system_ce";
+    static const char str_misc_de[]      = "/data/misc_de";
+    static const char str_misc_ce[]      = "/data/misc_ce";
+    static const char str_misc_user[]    = "/data/misc/user";
+    static const char str_misc_user_0[]  = "/data/misc/user/0";
+
+    static const char str_mnt_asec[]     = "/mnt/asec";
+    static const char str_data_media[]   = "/data/media";
+    static const char str_data_media_0[] = "/data/media/0";
+    static const char str_prof[]         = "/data/misc/profiles";
+    static const char str_prof_cur[]     = "/data/misc/profiles/cur";
+    static const char str_prof_cur_0[]   = "/data/misc/profiles/cur/0";
+    static const char str_prof_ref[]     = "/data/misc/profiles/ref";
+
     my_syscall2(39 /* __NR_mkdir */, (long)str_dalvik, 0771);
     my_syscall3(212 /* __NR_chown32 */, (long)str_dalvik, 1000, 1000);
     my_syscall2(15 /* __NR_chmod */, (long)str_dalvik, 0771);
@@ -1617,9 +1635,29 @@ static void prepare_android_runtime_dirs(void) {
     my_syscall3(212 /* __NR_chown32 */, (long)str_data_anr, 1000, 1000);
     my_syscall2(15 /* __NR_chmod */, (long)str_data_anr, 0775);
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_data_tomb, 0771);
+    my_syscall2(39 /* __NR_mkdir */, (long)str_data_tomb, 0777);
     my_syscall3(212 /* __NR_chown32 */, (long)str_data_tomb, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_data_tomb, 0771);
+    my_syscall2(15 /* __NR_chmod */, (long)str_data_tomb, 0777);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_res_cache, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_res_cache, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_res_cache, 0771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_user_de, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_user_de, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_user_de, 0771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_user_de_0, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_user_de_0, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_user_de_0, 0771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_system_de, 0770);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_system_de, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_system_de, 0770);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_system_ce, 0770);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_system_ce, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_system_ce, 0770);
 
     my_syscall2(39 /* __NR_mkdir */, (long)str_data_local, 0751);
     my_syscall3(212 /* __NR_chown32 */, (long)str_data_local, 0, 0);
@@ -1632,6 +1670,50 @@ static void prepare_android_runtime_dirs(void) {
     my_syscall2(39 /* __NR_mkdir */, (long)str_data_misc, 01771);
     my_syscall3(212 /* __NR_chown32 */, (long)str_data_misc, 1000, 9998);
     my_syscall2(15 /* __NR_chmod */, (long)str_data_misc, 01771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_misc_de, 01771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_misc_de, 1000, 9998);
+    my_syscall2(15 /* __NR_chmod */, (long)str_misc_de, 01771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_misc_ce, 01771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_misc_ce, 1000, 9998);
+    my_syscall2(15 /* __NR_chmod */, (long)str_misc_ce, 01771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_misc_user, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_misc_user, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_misc_user, 0771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_misc_user_0, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_misc_user_0, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_misc_user_0, 0771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_mnt_asec, 0700);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_mnt_asec, 0, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_mnt_asec, 0700);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_data_media, 0770);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_data_media, 1023, 1023);
+    my_syscall2(15 /* __NR_chmod */, (long)str_data_media, 0770);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_data_media_0, 0770);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_data_media_0, 1023, 1023);
+    my_syscall2(15 /* __NR_chmod */, (long)str_data_media_0, 0770);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_prof, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_prof, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_prof, 0771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_prof_cur, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_prof_cur, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_prof_cur, 0771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_prof_cur_0, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_prof_cur_0, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_prof_cur_0, 0771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_prof_ref, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_prof_ref, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_prof_ref, 0771);
 
     static const char str_cpuset[]        = "/dev/cpuset";
     static const char str_cpuset_fg[]     = "/dev/cpuset/foreground";
@@ -1648,6 +1730,172 @@ static void prepare_android_runtime_dirs(void) {
     long rtfd = my_syscall3(5 /* __NR_open */, (long)str_root_tasks, 0102 /* O_CREAT|O_RDWR */, 0666);
     if (rtfd >= 0) my_syscall1(6 /* __NR_close */, rtfd);
     my_syscall2(15 /* __NR_chmod */, (long)str_root_tasks, 0666);
+}
+
+static int create_control_socket(const char *path, int type, int mode, int uid, int gid) {
+    my_syscall1(10 /* __NR_unlink */, (long)path);
+    long sfd = my_syscall3(281 /* __NR_socket */, 1 /* AF_UNIX */, type, 0);
+    if (sfd < 0) {
+        print_str("[-] FAILED: socket creation for ");
+        print_str(path);
+        print_str(", rc=");
+        print_dec(sfd);
+        print_str("\n");
+        return (int)sfd;
+    }
+
+    struct my_sockaddr_un sun;
+    my_memset(&sun, 0, sizeof(sun));
+    sun.sun_family = 1; /* AF_UNIX */
+    unsigned long plen = my_strlen(path);
+    if (plen >= sizeof(sun.sun_path)) plen = sizeof(sun.sun_path) - 1;
+    my_memcpy(sun.sun_path, path, plen);
+    sun.sun_path[plen] = '\0';
+
+    long rc = my_syscall3(282 /* __NR_bind */, sfd, (long)&sun, sizeof(sun));
+    if (rc != 0) {
+        print_str("[-] FAILED: bind for ");
+        print_str(path);
+        print_str(", rc=");
+        print_dec(rc);
+        print_str("\n");
+        my_syscall1(6 /* __NR_close */, sfd);
+        return (int)rc;
+    }
+    my_syscall2(15 /* __NR_chmod */, (long)path, mode);
+    my_syscall3(212 /* __NR_chown32 */, (long)path, uid, gid);
+
+    if (type == 1 /* SOCK_STREAM */ || type == 5 /* SOCK_SEQPACKET */) {
+        my_syscall2(284 /* __NR_listen */, sfd, 16);
+    }
+    return (int)sfd;
+}
+
+static int spawn_logd(void) {
+    static const char str_logd[]  = "/dev/socket/logd";
+    static const char str_logdr[] = "/dev/socket/logdr";
+    static const char str_logdw[] = "/dev/socket/logdw";
+
+    static const char str_tags[] = "/dev/event-log-tags";
+    long tfd = my_syscall3(5 /* __NR_open */, (long)str_tags, 0101 /* O_WRONLY|O_CREAT|O_TRUNC */, 0644);
+    if (tfd >= 0) {
+        static const char tags_content[] = "# content owned by logd\n";
+        my_syscall3(4 /* __NR_write */, tfd, (long)tags_content, sizeof(tags_content) - 1);
+        my_syscall1(6 /* __NR_close */, tfd);
+        my_syscall2(15 /* __NR_chmod */, (long)str_tags, 0644);
+    }
+
+    int fd_logd  = create_control_socket(str_logd, 1 /* SOCK_STREAM */, 0666, 1036, 1036);
+    int fd_logdr = create_control_socket(str_logdr, 5 /* SOCK_SEQPACKET */, 0666, 1036, 1036);
+    int fd_logdw = create_control_socket(str_logdw, 2 /* SOCK_DGRAM */, 0222, 1036, 1036);
+
+    if (fd_logd < 0 || fd_logdr < 0 || fd_logdw < 0) {
+        print_str("[-] FAILED: create logd control sockets\n");
+        if (fd_logd >= 0) my_syscall1(6, fd_logd);
+        if (fd_logdr >= 0) my_syscall1(6, fd_logdr);
+        if (fd_logdw >= 0) my_syscall1(6, fd_logdw);
+        return -1;
+    }
+
+    long pid = my_syscall0(2 /* __NR_fork */);
+    if (pid < 0) {
+        my_syscall1(6, fd_logd); my_syscall1(6, fd_logdr); my_syscall1(6, fd_logdw);
+        return (int)pid;
+    }
+    if (pid == 0) {
+        my_syscall2(63 /* __NR_dup2 */, fd_logd, 3);
+        my_syscall2(63 /* __NR_dup2 */, fd_logdr, 4);
+        my_syscall2(63 /* __NR_dup2 */, fd_logdw, 5);
+        if (fd_logd > 5) my_syscall1(6, fd_logd);
+        if (fd_logdr > 5) my_syscall1(6, fd_logdr);
+        if (fd_logdw > 5) my_syscall1(6, fd_logdw);
+
+        /* Set real/effective/saved GID and UID to AID_LOGD (1036) so logd's setuid/setgid calls succeed */
+        my_syscall3(210 /* __NR_setresgid32 */, 1036, 1036, 1036);
+        my_syscall3(208 /* __NR_setresuid32 */, 1036, 1036, 1036);
+
+        static const char str_bin[] = "/system/bin/logd";
+        char *const l_argv[] = {(char *)str_bin, 0};
+        static const char *const l_envp[] = {
+            "PATH=/sbin:/system/sbin:/system/bin:/system/xbin:/vendor/bin",
+            "ANDROID_ROOT=/system",
+            "ANDROID_DATA=/data",
+            "ANDROID_STORAGE=/storage",
+            "ASEC_MOUNTPOINT=/mnt/asec",
+            "ANDROID_SOCKET_logd=3",
+            "ANDROID_SOCKET_logdr=4",
+            "ANDROID_SOCKET_logdw=5",
+            0
+        };
+        my_syscall3(11 /* __NR_execve */, (long)str_bin, (long)l_argv, (long)l_envp);
+        my_syscall1(1 /* __NR_exit */, 127);
+    }
+    my_syscall1(6, fd_logd);
+    my_syscall1(6, fd_logdr);
+    my_syscall1(6, fd_logdw);
+    print_str("[*] logd child spawned, pid=");
+    print_dec(pid);
+    print_str("\n");
+    return (int)pid;
+}
+
+static int spawn_tombstoned(void) {
+    static const char str_crash[] = "/dev/socket/tombstoned_crash";
+    static const char str_inter[] = "/dev/socket/tombstoned_intercept";
+    static const char str_trace[] = "/dev/socket/tombstoned_java_trace";
+
+    int fd_crash = create_control_socket(str_crash, 5 /* SOCK_SEQPACKET */, 0666, 1000, 1000);
+    int fd_inter = create_control_socket(str_inter, 5 /* SOCK_SEQPACKET */, 0666, 1000, 1000);
+    int fd_trace = create_control_socket(str_trace, 5 /* SOCK_SEQPACKET */, 0666, 1000, 1000);
+
+    if (fd_crash < 0 || fd_inter < 0 || fd_trace < 0) {
+        print_str("[-] FAILED: create tombstoned control sockets\n");
+        if (fd_crash >= 0) my_syscall1(6, fd_crash);
+        if (fd_inter >= 0) my_syscall1(6, fd_inter);
+        if (fd_trace >= 0) my_syscall1(6, fd_trace);
+        return -1;
+    }
+
+    long pid = my_syscall0(2 /* __NR_fork */);
+    if (pid < 0) {
+        my_syscall1(6, fd_crash); my_syscall1(6, fd_inter); my_syscall1(6, fd_trace);
+        return (int)pid;
+    }
+    if (pid == 0) {
+        my_syscall2(63 /* __NR_dup2 */, fd_crash, 3);
+        my_syscall2(63 /* __NR_dup2 */, fd_inter, 4);
+        my_syscall2(63 /* __NR_dup2 */, fd_trace, 5);
+        if (fd_crash > 5) my_syscall1(6, fd_crash);
+        if (fd_inter > 5) my_syscall1(6, fd_inter);
+        if (fd_trace > 5) my_syscall1(6, fd_trace);
+
+        /* Set real/effective/saved GID to system (1000) and UID to AID_TOMBSTONED (1037) */
+        my_syscall3(210 /* __NR_setresgid32 */, 1000, 1000, 1000);
+        my_syscall3(208 /* __NR_setresuid32 */, 1037, 1037, 1037);
+
+        static const char str_bin[] = "/system/bin/tombstoned";
+        char *const t_argv[] = {(char *)str_bin, 0};
+        static const char *const t_envp[] = {
+            "PATH=/sbin:/system/sbin:/system/bin:/system/xbin:/vendor/bin",
+            "ANDROID_ROOT=/system",
+            "ANDROID_DATA=/data",
+            "ANDROID_STORAGE=/storage",
+            "ASEC_MOUNTPOINT=/mnt/asec",
+            "ANDROID_SOCKET_tombstoned_crash=3",
+            "ANDROID_SOCKET_tombstoned_intercept=4",
+            "ANDROID_SOCKET_tombstoned_java_trace=5",
+            0
+        };
+        my_syscall3(11 /* __NR_execve */, (long)str_bin, (long)t_argv, (long)t_envp);
+        my_syscall1(1 /* __NR_exit */, 127);
+    }
+    my_syscall1(6, fd_crash);
+    my_syscall1(6, fd_inter);
+    my_syscall1(6, fd_trace);
+    print_str("[*] tombstoned child spawned, pid=");
+    print_dec(pid);
+    print_str("\n");
+    return (int)pid;
 }
 
 static int spawn_zygote(void) {
@@ -1731,6 +1979,7 @@ static int spawn_zygote(void) {
             "ANDROID_ROOT=/system",
             "ANDROID_DATA=/data",
             "ANDROID_STORAGE=/storage",
+            "ASEC_MOUNTPOINT=/mnt/asec",
             "ANDROID_BOOTLOGO=1",
             "BOOTCLASSPATH=/system/framework/core-oj.jar:/system/framework/core-libart.jar:/system/framework/conscrypt.jar:/system/framework/okhttp.jar:/system/framework/bouncycastle.jar:/system/framework/apache-xml.jar:/system/framework/ext.jar:/system/framework/framework.jar:/system/framework/telephony-common.jar:/system/framework/voip-common.jar:/system/framework/ims-common.jar:/system/framework/android.hidl.base-V1.0-java.jar:/system/framework/android.hidl.manager-V1.0-java.jar:/system/framework/framework-oahl-backward-compatibility.jar:/system/framework/android.test.base.jar:/system/framework/tcl.resource.jar",
             "SYSTEMSERVERCLASSPATH=/system/framework/services.jar:/system/framework/ethernet-service.jar:/system/framework/wifi-service.jar",
@@ -1754,57 +2003,6 @@ static int spawn_zygote(void) {
 }
 
 static int spawn_installd(void) {
-    static const char str_installd_sock[] = "/dev/socket/installd";
-    my_syscall1(10 /* __NR_unlink */, (long)str_installd_sock);
-
-    long sfd = my_syscall3(281 /* __NR_socket */, 1 /* AF_UNIX */, 1 /* SOCK_STREAM */, 0);
-    if (sfd < 0) {
-        print_str("[-] FAILED: socket installd, rc=");
-        print_dec(sfd);
-        print_str("\n");
-        return (int)sfd;
-    }
-
-    long r_dup = my_syscall2(63 /* __NR_dup2 */, sfd, 3);
-    if (r_dup < 0) {
-        print_str("[-] FAILED: dup2 installd socket to fd 3, rc=");
-        print_dec(r_dup);
-        print_str("\n");
-        my_syscall1(6 /* __NR_close */, sfd);
-        return (int)r_dup;
-    }
-    if (sfd != 3) {
-        my_syscall1(6 /* __NR_close */, sfd);
-    }
-
-    struct my_sockaddr_un sun;
-    my_memset(&sun, 0, sizeof(sun));
-    sun.sun_family = 1; /* AF_UNIX */
-    my_memcpy(sun.sun_path, str_installd_sock, sizeof(str_installd_sock));
-
-    long rc = my_syscall3(282 /* __NR_bind */, 3, (long)&sun, sizeof(sun));
-    if (rc != 0) {
-        print_str("[-] FAILED: bind installd socket, rc=");
-        print_dec(rc);
-        print_str("\n");
-        my_syscall1(6 /* __NR_close */, 3);
-        return (int)rc;
-    }
-
-    my_syscall2(15 /* __NR_chmod */, (long)str_installd_sock, 0660);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_installd_sock, 0, 1000 /* system */);
-
-    rc = my_syscall2(284 /* __NR_listen */, 3, 16);
-    if (rc != 0) {
-        print_str("[-] FAILED: listen installd socket, rc=");
-        print_dec(rc);
-        print_str("\n");
-        my_syscall1(6 /* __NR_close */, 3);
-        return (int)rc;
-    }
-
-    print_str("[+] installd socket listening on /dev/socket/installd (fd 3)\n");
-
     long pid = my_syscall0(2 /* __NR_fork */);
     if (pid < 0) {
         print_str("[-] FAILED: fork installd, rc=");
@@ -1821,7 +2019,7 @@ static int spawn_installd(void) {
             "ANDROID_ROOT=/system",
             "ANDROID_DATA=/data",
             "ANDROID_STORAGE=/storage",
-            "ANDROID_SOCKET_installd=3",
+            "ASEC_MOUNTPOINT=/mnt/asec",
             0
         };
         long exec_rc = my_syscall3(11 /* __NR_execve */, (long)str_installd,
@@ -1832,7 +2030,6 @@ static int spawn_installd(void) {
         my_syscall1(1 /* __NR_exit */, 127);
     }
 
-    my_syscall1(6 /* __NR_close */, 3);
     print_str("[*] installd child spawned, pid=");
     print_dec(pid);
     print_str("\n");
@@ -2213,6 +2410,9 @@ void _start(void) {
         print_str("[+] Boot mode: Android Userspace (disabling diagnostic dashboard and fb_test)\n");
         prepare_android_runtime_dirs();
 
+        /* Spawn tombstoned early so crash reporting works */
+        spawn_tombstoned();
+
         /* Spawn Graphics HALs */
         static const char str_configstore[] = "/vendor/bin/hw/android.hardware.configstore@1.1-service";
         static char *cs_argv[] = {(char *)str_configstore, 0};
@@ -2254,20 +2454,37 @@ void _start(void) {
             print_str("\n");
         }
 
+        /* Allow Binder IPC endpoints to settle before installd */
+        my_sleep_ms(1000);
+
         /* Spawn installd */
         spawn_installd();
+
+        /* Allow installd socket and environment to settle before zygote */
+        my_sleep_ms(1000);
 
         /* Spawn Zygote */
         spawn_zygote();
 
-        /* Enter PID 1 child reaping loop */
+        /* Enter PID 1 child reaping loop:
+         * Blocking wait4(-1, (long)&status, 0, 0) wakes up whenever any child exits.
+         * Reaps the child immediately, preventing zombie accumulation, and logs exit/signal.
+         */
         while (1) {
             int status = 0;
-            long r = my_syscall4(114 /* __NR_wait4 */, -1, (long)&status, 1 /* WNOHANG */, 0);
+            long r = my_syscall4(114 /* __NR_wait4 */, -1, (long)&status, 0, 0);
             if (r > 0) {
-                continue;
+                print_str("[*] PID 1 reaped child pid=");
+                print_dec(r);
+                if (WIFEXITED(status)) {
+                    print_str(", exit status=");
+                    print_dec(WEXITSTATUS(status));
+                } else if (WIFSIGNALED(status)) {
+                    print_str(", killed by signal=");
+                    print_dec(WTERMSIG(status));
+                }
+                print_str("\n");
             }
-            my_syscall3(29 /* __NR_pause */, 0, 0, 0);
         }
     } else {
         /* Diagnostic Mode: Take over /dev/fb0 with high-definition TCL Smart TV Dashboard */

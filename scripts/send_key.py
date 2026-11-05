@@ -18,7 +18,7 @@ import select
 
 # TV remote key to QEMU monitor key mapping
 QEMU_KEY_MAP = {
-    "POWER": "p",
+    "POWER": "power",
     "UP": "up",
     "DOWN": "down",
     "LEFT": "left",
@@ -27,11 +27,11 @@ QEMU_KEY_MAP = {
     "ENTER": "ret",
     "CENTER": "ret",
     "BACK": "esc",
-    "HOME": "h",
-    "MENU": "m",
+    "HOME": "home",
+    "MENU": "menu",
     "VOLUME_UP": "volumeup",
     "VOLUME_DOWN": "volumedown",
-    "MUTE": "mute",
+    "MUTE": "audiomute",
     "1": "1",
     "2": "2",
     "3": "3",

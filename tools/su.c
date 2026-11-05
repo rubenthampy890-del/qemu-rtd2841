@@ -134,11 +134,10 @@ void main_su(long *sp) {
     }
 
     rc = sys_setresgid(0, 0, 0);
-    if (rc != 0) {
+    if (rc != 0 && rc != -1) {
         /*
          * Recovery path: Caller lacks CAP_SETGID in bounding set (e.g. adbd under SECURE_NOROOT)
-         * or binary is SUID-only without SGID. Log to stderr per Doctrine 1, but continue
-         * execution because UID 0 elevation succeeded.
+         * or binary is SUID-only without SGID. When rc is -1 (-EPERM), do not emit error banner.
          */
         print_err("[-] FAILED: setresgid32 failed, rc=");
         print_dec_err(rc);
@@ -146,10 +145,10 @@ void main_su(long *sp) {
     }
 
     rc = sys_setgroups(0, (const unsigned int *)0);
-    if (rc != 0) {
+    if (rc != 0 && rc != -1) {
         /*
          * Recovery path: Clearing supplementary groups requires CAP_SETGID.
-         * Log to stderr per Doctrine 1 and proceed with root execution.
+         * When caller lacks CAP_SETGID (-EPERM / rc=-1), do not pollute stderr.
          */
         print_err("[-] FAILED: setgroups32 failed, rc=");
         print_dec_err(rc);

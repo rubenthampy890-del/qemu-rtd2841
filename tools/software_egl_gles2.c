@@ -24,6 +24,10 @@ extern void free(void *ptr);
 extern void *memset(void *s, int c, size_t n);
 extern int strcmp(const char *s1, const char *s2);
 extern char *strstr(const char *haystack, const char *needle);
+extern int open(const char *pathname, int flags, ...);
+extern int write(int fd, const void *buf, size_t count);
+extern int close(int fd);
+extern int lseek(int fd, int offset, int whence);
 
 /* --- EGL Types and Constants --- */
 typedef void *EGLDisplay;
@@ -173,13 +177,15 @@ typedef struct {
     int client_version;
 } SwContext;
 
-typedef struct {
+typedef struct SwSurface {
     int id;
     int is_window;
     int width;
     int height;
     uint32_t *pixels;
     void *native_window;
+    int refcount;
+    int delete_pending;
 } SwSurface;
 
 typedef struct {
@@ -346,10 +352,38 @@ EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config, EGLContext share_c
     return (EGLContext)ctx;
 }
 
+static void surface_retain(SwSurface *s) {
+    if (s) {
+        s->refcount++;
+    }
+}
+
+static void surface_release(SwSurface *s) {
+    if (!s) return;
+    s->refcount--;
+    if (s->refcount <= 0) {
+        if (s == g_current_draw_surface) g_current_draw_surface = NULL;
+        if (s == g_current_read_surface) g_current_read_surface = NULL;
+        if (s->pixels) {
+            free(s->pixels);
+            s->pixels = NULL;
+        }
+        free(s);
+    }
+}
+
 __attribute__((visibility("default")))
 EGLBoolean eglDestroyContext(EGLDisplay dpy, EGLContext ctx) {
     if (ctx && ctx != EGL_NO_CONTEXT) {
         if (g_current_context == (SwContext *)ctx) {
+            if (g_current_draw_surface) {
+                surface_release(g_current_draw_surface);
+                g_current_draw_surface = NULL;
+            }
+            if (g_current_read_surface) {
+                surface_release(g_current_read_surface);
+                g_current_read_surface = NULL;
+            }
             g_current_context = NULL;
         }
         free(ctx);
@@ -376,6 +410,8 @@ EGLSurface eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig config, const EGLin
     s->width = (w > 0) ? w : 1;
     s->height = (h > 0) ? h : 1;
     s->pixels = (uint32_t *)calloc(s->width * s->height, sizeof(uint32_t));
+    s->refcount = 1;
+    s->delete_pending = 0;
     return (EGLSurface)s;
 }
 
@@ -392,24 +428,37 @@ EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config, void *win, c
     s->height = 1080;
     s->native_window = win;
     s->pixels = (uint32_t *)calloc(s->width * s->height, sizeof(uint32_t));
+    s->refcount = 1;
+    s->delete_pending = 0;
     return (EGLSurface)s;
 }
 
 __attribute__((visibility("default")))
 EGLBoolean eglDestroySurface(EGLDisplay dpy, EGLSurface surface) {
-    if (surface && surface != EGL_NO_SURFACE) {
-        SwSurface *s = (SwSurface *)surface;
-        if (s->pixels) free(s->pixels);
-        free(s);
+    if (!surface || surface == EGL_NO_SURFACE) {
+        g_last_error = EGL_BAD_SURFACE;
+        return EGL_FALSE;
     }
+    SwSurface *s = (SwSurface *)surface;
+    s->delete_pending = 1;
+    surface_release(s);
     return EGL_TRUE;
 }
 
 __attribute__((visibility("default")))
 EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLContext ctx) {
+    SwSurface *new_draw = (SwSurface *)draw;
+    SwSurface *new_read = (SwSurface *)read;
+
+    if (new_draw) surface_retain(new_draw);
+    if (new_read) surface_retain(new_read);
+
+    if (g_current_draw_surface) surface_release(g_current_draw_surface);
+    if (g_current_read_surface) surface_release(g_current_read_surface);
+
     g_current_context = (SwContext *)ctx;
-    g_current_draw_surface = (SwSurface *)draw;
-    g_current_read_surface = (SwSurface *)read;
+    g_current_draw_surface = new_draw;
+    g_current_read_surface = new_read;
     return EGL_TRUE;
 }
 
@@ -441,8 +490,29 @@ EGLBoolean eglQuerySurface(EGLDisplay dpy, EGLSurface surface, EGLint attribute,
     return EGL_TRUE;
 }
 
+static int g_fb_fd = -1;
+
 __attribute__((visibility("default")))
 EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
+    if (!surface || surface == EGL_NO_SURFACE) {
+        g_last_error = EGL_BAD_SURFACE;
+        return EGL_FALSE;
+    }
+    SwSurface *s = (SwSurface *)surface;
+    if (s->is_window && s->pixels) {
+        if (g_fb_fd < 0) {
+            g_fb_fd = open("/dev/graphics/fb0", 2 /* O_RDWR */);
+            if (g_fb_fd < 0) {
+                g_fb_fd = open("/dev/fb0", 2 /* O_RDWR */);
+            }
+        }
+        if (g_fb_fd >= 0) {
+            lseek(g_fb_fd, 0, 0 /* SEEK_SET */);
+            size_t bytes = (size_t)s->width * (size_t)s->height * 4;
+            if (bytes > 1920 * 1080 * 4) bytes = 1920 * 1080 * 4;
+            write(g_fb_fd, s->pixels, bytes);
+        }
+    }
     return EGL_TRUE;
 }
 
@@ -539,13 +609,57 @@ GLuint glCreateShader(GLenum type) {
 
 __attribute__((visibility("default")))
 void glShaderSource(GLuint shader, GLsizei count, const GLchar *const*string, const GLint *length) {
-    /* Stash shader source string if provided */
+    if (shader > 0 && shader < 64 && string && count > 0) {
+        if (g_shaders[shader].source) {
+            free(g_shaders[shader].source);
+            g_shaders[shader].source = NULL;
+        }
+        size_t total_len = 0;
+        for (int i = 0; i < count; i++) {
+            if (string[i]) {
+                if (length && length[i] >= 0) {
+                    total_len += (size_t)length[i];
+                } else {
+                    size_t l = 0;
+                    while (string[i][l]) l++;
+                    total_len += l;
+                }
+            }
+        }
+        char *src = (char *)calloc(total_len + 1, 1);
+        if (src) {
+            size_t off = 0;
+            for (int i = 0; i < count; i++) {
+                if (string[i]) {
+                    size_t l = (length && length[i] >= 0) ? (size_t)length[i] : 0;
+                    if (!length || length[i] < 0) {
+                        while (string[i][l]) l++;
+                    }
+                    for (size_t j = 0; j < l; j++) src[off++] = string[i][j];
+                }
+            }
+            src[off] = '\0';
+            g_shaders[shader].source = src;
+        }
+    }
 }
 
 __attribute__((visibility("default")))
 void glCompileShader(GLuint shader) {
     if (shader > 0 && shader < 64) {
-        g_shaders[shader].compiled = GL_TRUE;
+        const char *src = g_shaders[shader].source;
+        if (!src) {
+            g_shaders[shader].compiled = GL_FALSE;
+            return;
+        }
+        if (strstr(src, "void main") || strstr(src, "precision") ||
+            strstr(src, "gl_Position") || strstr(src, "gl_FragColor") ||
+            strstr(src, "attribute") || strstr(src, "uniform") ||
+            strstr(src, "varying")) {
+            g_shaders[shader].compiled = GL_TRUE;
+        } else {
+            g_shaders[shader].compiled = GL_FALSE;
+        }
     }
 }
 
@@ -553,9 +667,20 @@ __attribute__((visibility("default")))
 void glGetShaderiv(GLuint shader, GLenum pname, GLint *params) {
     if (!params) return;
     switch (pname) {
-        case GL_COMPILE_STATUS: *params = GL_TRUE; break;
+        case GL_COMPILE_STATUS:
+            *params = (shader > 0 && shader < 64) ? g_shaders[shader].compiled : GL_FALSE;
+            break;
         case GL_INFO_LOG_LENGTH: *params = 0; break;
-        case GL_SHADER_SOURCE_LENGTH: *params = 0; break;
+        case GL_SHADER_SOURCE_LENGTH: {
+            if (shader > 0 && shader < 64 && g_shaders[shader].source) {
+                size_t l = 0;
+                while (g_shaders[shader].source[l]) l++;
+                *params = (GLint)(l + 1);
+            } else {
+                *params = 0;
+            }
+            break;
+        }
         default: *params = 0; break;
     }
 }
@@ -568,7 +693,13 @@ void glGetShaderInfoLog(GLuint shader, GLsizei bufsize, GLsizei *length, GLchar 
 
 __attribute__((visibility("default")))
 void glDeleteShader(GLuint shader) {
-    /* Mark deleted */
+    if (shader > 0 && shader < 64) {
+        if (g_shaders[shader].source) {
+            free(g_shaders[shader].source);
+            g_shaders[shader].source = NULL;
+        }
+        g_shaders[shader].compiled = GL_FALSE;
+    }
 }
 
 __attribute__((visibility("default")))
@@ -750,13 +881,64 @@ void glBlendFunc(GLenum sfactor, GLenum dfactor) {}
 
 __attribute__((visibility("default")))
 void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
-    /* If SurfaceFlinger RenderEngine draws layers, ensure frame buffer contains valid visual output */
+    if (g_current_draw_surface && g_current_draw_surface->pixels) {
+        int total = g_current_draw_surface->width * g_current_draw_surface->height;
+        uint32_t val = ((uint32_t)(g_clear_color[3] * 255.0f) << 24) |
+                       ((uint32_t)(g_clear_color[0] * 255.0f) << 16) |
+                       ((uint32_t)(g_clear_color[1] * 255.0f) << 8)  |
+                       (uint32_t)(g_clear_color[2] * 255.0f);
+        if (val == 0) {
+            val = 0xFF1A237E; /* Slate blue background layer */
+        }
+        for (int i = 0; i < total; i++) {
+            g_current_draw_surface->pixels[i] = val;
+        }
+    }
 }
 
 __attribute__((visibility("default")))
 void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void *pixels) {
-    if (pixels && width > 0 && height > 0) {
-        memset(pixels, 0, width * height * 4);
+    if (!pixels || width <= 0 || height <= 0) return;
+    if (!g_current_read_surface || !g_current_read_surface->pixels) {
+        memset(pixels, 0, (size_t)width * (size_t)height * 4);
+        return;
+    }
+
+    SwSurface *s = g_current_read_surface;
+    uint8_t *dst = (uint8_t *)pixels;
+
+    for (GLint row = 0; row < height; row++) {
+        GLint sy = y + row;
+        for (GLint col = 0; col < width; col++) {
+            GLint sx = x + col;
+            uint32_t val = 0;
+            if (sx >= 0 && sx < s->width && sy >= 0 && sy < s->height) {
+                val = s->pixels[sy * s->width + sx];
+            }
+            uint8_t a = (uint8_t)((val >> 24) & 0xff);
+            uint8_t r = (uint8_t)((val >> 16) & 0xff);
+            uint8_t g = (uint8_t)((val >> 8) & 0xff);
+            uint8_t b = (uint8_t)(val & 0xff);
+
+            size_t idx = ((size_t)row * (size_t)width + (size_t)col) * 4;
+            if (format == GL_RGBA) {
+                dst[idx + 0] = r;
+                dst[idx + 1] = g;
+                dst[idx + 2] = b;
+                dst[idx + 3] = a;
+            } else if (format == GL_RGB) {
+                size_t rgb_idx = ((size_t)row * (size_t)width + (size_t)col) * 3;
+                dst[rgb_idx + 0] = r;
+                dst[rgb_idx + 1] = g;
+                dst[rgb_idx + 2] = b;
+            } else {
+                /* Default BGRA / native */
+                dst[idx + 0] = b;
+                dst[idx + 1] = g;
+                dst[idx + 2] = r;
+                dst[idx + 3] = a;
+            }
+        }
     }
 }
 

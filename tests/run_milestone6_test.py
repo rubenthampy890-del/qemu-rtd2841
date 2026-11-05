@@ -123,7 +123,7 @@ def boot_qemu(overlay: Path, output: Path, commands: list, terminal_marker: byte
 
     append_str = ("console=ttyS0,115200 earlyprintk "
                   "root=/dev/mmcblk0p1 rootfstype=ext4 rw rootwait "
-                  "init=/init consoleblank=0 enforcing=0 androidboot.selinux=permissive")
+                  "init=/init consoleblank=0 enforcing=0 androidboot.selinux=permissive fbcon=map:9")
     if is_android_mode:
         append_str += " android=1"
 
@@ -219,12 +219,24 @@ def boot_qemu(overlay: Path, output: Path, commands: list, terminal_marker: byte
     finally:
         selector.close()
         if proc.poll() is None:
-            os.killpg(proc.pid, signal.SIGTERM)
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait(timeout=5)
+            if qmp_sock and qmp_sock.exists():
+                try:
+                    qsock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    qsock.settimeout(2.0)
+                    qsock.connect(str(qmp_sock))
+                    qsock.recv(1024)
+                    qsock.sendall(b'{"execute":"qmp_capabilities"}\n{"execute":"quit"}\n')
+                    qsock.close()
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGTERM)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait(timeout=5)
         else:
             proc.wait()
 
@@ -414,8 +426,8 @@ def main():
             "/system/bin/mount -t ext4 /dev/mmcblk0p3 /data",
             "echo __MOUNT_DATA_RC_${?}__",
             "/system/bin/cp /tmp/host-key /adb_keys && "
-            "/system/bin/chmod 600 /adb_keys && "
-            "/system/bin/chown 0:0 /adb_keys && "
+            "/system/bin/chmod 644 /adb_keys && "
+            "/system/bin/chown 2000:2000 /adb_keys && "
             "/system/bin/mkdir -p /data/misc/adb && "
             "/system/bin/cp /tmp/host-key /data/misc/adb/adb_keys && "
             "/system/bin/chmod 600 /data/misc/adb/adb_keys && "
@@ -428,11 +440,14 @@ def main():
             "/system/bin/chmod 666 /data/persistence_token.txt && "
             "/system/bin/sync && /system/bin/cat /data/persistence_token.txt",
             "echo __CANARY_WRITE_RC_${?}__",
+            "/system/bin/sync && /system/bin/sync",
             "echo __BOOT1_END__",
         ]
         (boot1_dir / "guest-commands.txt").write_text("\n".join(boot1_cmds) + "\n")
 
-        boot1_res = boot_qemu(overlay, boot1_dir, boot1_cmds, rb"(?m)^__BOOT1_END__\r?$", timeout=180)
+        qmp_sock1 = boot1_dir / "qmp.sock"
+        boot1_res = boot_qemu(overlay, boot1_dir, boot1_cmds, rb"(?m)^__BOOT1_END__\r?$",
+                              qmp_sock=qmp_sock1, timeout=180)
         boot1_log = (boot1_dir / "serial.log").read_bytes()
 
         req_boot1 = [
@@ -504,7 +519,7 @@ def main():
             p_hwsm = subprocess.run([str(ADB), "-s", target, "shell", "getprop hwservicemanager.ready"], capture_output=True, text=True).stdout.strip()
 
             sf_check = subprocess.run([str(ADB), "-s", target, "shell", "service check SurfaceFlinger"], capture_output=True, text=True).stdout.strip()
-            sf_registered = ("found" in sf_check)
+            sf_registered = (sf_check == "Service SurfaceFlinger: found")
 
             ps_out = subprocess.run([str(ADB), "-s", target, "shell", "ps -A"], capture_output=True, text=True).stdout
             sf_running = ("surfaceflinger" in ps_out)
@@ -512,10 +527,14 @@ def main():
             alloc_running = ("allocator" in ps_out)
             comp_running = ("composer" in ps_out)
             zygote_running = ("app_process" in ps_out)
+            installd_running = ("installd" in ps_out)
 
             # 4. Inject IR keyevent via QMP to prove hardware model live interaction
             ir_ok = qmp_send_ir(qmp_sock2, 0x0B)  # KEY_ENTER
             print(f"[+] Boot 2 QMP IR hardware injection: {ir_ok}")
+
+            # Flush filesystem caches to disk before shutdown
+            subprocess.run([str(ADB), "-s", target, "shell", "sync"], capture_output=True)
 
             success = (
                 (canary_token_1 in c1_read) and
@@ -528,6 +547,7 @@ def main():
                 alloc_running and
                 comp_running and
                 zygote_running and
+                installd_running and
                 ir_ok
             )
             return {
@@ -542,6 +562,7 @@ def main():
                 "allocator_running": alloc_running,
                 "composer_running": comp_running,
                 "zygote_running": zygote_running,
+                "installd_running": installd_running,
                 "ir_injection_success": ir_ok
             }
 
@@ -550,7 +571,9 @@ def main():
                               is_android_mode=True, timeout=180)
         boot2_adb = boot2_res.get("adb_hook_result")
         if not boot2_adb or not boot2_adb.get("success"):
-            print(f"[-] Boot 2 verification failed:\n{json.dumps(boot2_adb, indent=2)}")
+            print(f"[-] Boot 2 verification failed:\n{json.dumps(boot2_res, default=str, indent=2)}")
+            if (boot2_dir / "serial.log").exists():
+                print(f"[-] Boot 2 tail serial.log:\n{(boot2_dir / 'serial.log').read_text(errors='ignore')[-2000:]}")
             raise RuntimeError("[-] Boot 2 verification failed.")
         print("[+] Boot 2 successful: persistence verified, Treble services healthy, IR injected.")
 
@@ -562,6 +585,7 @@ def main():
         print("===================================================================")
         boot3_dir = out_dir / "boot3"
         boot3_dir.mkdir()
+        qmp_sock3 = out_dir / "qmp3.sock"
 
         subprocess.run([str(ADB), "kill-server"], capture_output=True)
         time.sleep(1)
@@ -601,7 +625,7 @@ def main():
             p_hwsm = subprocess.run([str(ADB), "-s", target, "shell", "getprop hwservicemanager.ready"], capture_output=True, text=True).stdout.strip()
 
             sf_check = subprocess.run([str(ADB), "-s", target, "shell", "service check SurfaceFlinger"], capture_output=True, text=True).stdout.strip()
-            sf_registered = ("found" in sf_check)
+            sf_registered = (sf_check == "Service SurfaceFlinger: found")
 
             ps_out = subprocess.run([str(ADB), "-s", target, "shell", "ps -A"], capture_output=True, text=True).stdout
             sf_running = ("surfaceflinger" in ps_out)
@@ -609,6 +633,7 @@ def main():
             alloc_running = ("allocator" in ps_out)
             comp_running = ("composer" in ps_out)
             zygote_running = ("app_process" in ps_out)
+            installd_running = ("installd" in ps_out)
 
             # 3. Check data mount
             data_mount = subprocess.run([str(ADB), "-s", target, "shell", "mount | grep /data"], capture_output=True, text=True).stdout.strip()
@@ -624,7 +649,8 @@ def main():
                 cs_running and
                 alloc_running and
                 comp_running and
-                zygote_running
+                zygote_running and
+                installd_running
             )
             return {
                 "success": success,
@@ -640,14 +666,18 @@ def main():
                 "allocator_running": alloc_running,
                 "composer_running": comp_running,
                 "zygote_running": zygote_running,
+                "installd_running": installd_running,
                 "data_mount": data_mount
             }
 
         boot3_res = boot_qemu(overlay, boot3_dir, [], b"", hostfwd_port=adb_port3,
+                              qmp_sock=qmp_sock3,
                               adb_hook=run_boot3_adb_suite, is_android_mode=True, timeout=180)
         boot3_adb = boot3_res.get("adb_hook_result")
         if not boot3_adb or not boot3_adb.get("success"):
-            print(f"[-] Boot 3 verification failed:\n{json.dumps(boot3_adb, indent=2)}")
+            print(f"[-] Boot 3 verification failed:\n{json.dumps(boot3_res, default=str, indent=2)}")
+            if (boot3_dir / "serial.log").exists():
+                print(f"[-] Boot 3 tail serial.log:\n{(boot3_dir / 'serial.log').read_text(errors='ignore')[-2000:]}")
             raise RuntimeError("[-] Boot 3 verification failed.")
         print("[+] Boot 3 successful: cumulative persistence confirmed, all Android services active.")
 

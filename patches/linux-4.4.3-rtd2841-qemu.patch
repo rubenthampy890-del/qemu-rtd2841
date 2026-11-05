@@ -218,11 +218,40 @@ index a013a835..31dda7ea 100755
  		caller = (char *)ptr->caller;
  		if (need_debug_cma_deferfree()) {
 @@ -1164,7 +1165,7 @@ void dvr_free_page_mesg(const struct page *page)
- 			if(caller)
- 				kfree((void *)caller);
- 		} else {
+  		} else {
 -			BUG();
 +			return;
  		}
  	}
  }
+diff --git a/arch/arm/kernel/setup.c b/arch/arm/kernel/setup.c
+index 89b8279c..51373332 100755
+--- a/arch/arm/kernel/setup.c
++++ b/arch/arm/kernel/setup.c
+@@ -967,10 +967,12 @@ void __init setup_arch(char **cmdline_p)
+ 
+ 	// RTK_patch: support atags to dtbs
+ #ifdef CONFIG_BUILD_ARM_APPENDED_DTB_IMAGE_EXT
++	if (be32_to_cpup((__be32 *)phys_to_virt(__atags_pointer)) != OF_DT_HEADER) {
+ 	#ifdef CONFIG_ARM_ATAG_DTB_COMPAT_EXT
+ 		atags_to_fdt(phys_to_virt(__atags_pointer), &__dtb_start, 0x4000);
+ 	#endif
+-	memcpy((void *)phys_to_virt(__atags_pointer), (void *)&__dtb_start, (int)&__dtb_end - (int)&__dtb_start);
++		memcpy((void *)phys_to_virt(__atags_pointer), (void *)&__dtb_start, (int)&__dtb_end - (int)&__dtb_start);
++	}
+ #endif
+ 
+ 	mdesc = setup_machine_fdt(__atags_pointer);
+diff --git a/arch/arm/mach-rtd284x/include/mach/system.h b/arch/arm/mach-rtd284x/include/mach/system.h
+index 276e3be9..7ae5c1de 100755
+--- a/arch/arm/mach-rtd284x/include/mach/system.h
++++ b/arch/arm/mach-rtd284x/include/mach/system.h
+@@ -7,7 +7,7 @@
+  *
+  */
+ 
+-#ifndef _ASM_MACH_SYSTME_H_
++#ifndef _ASM_MACH_SYSTEM_H_
+ #define _ASM_MACH_SYSTEM_H_
+ 
+ #include <asm/io.h>

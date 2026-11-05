@@ -1038,13 +1038,35 @@ static void rtd2841_kbd_event(DeviceState *dev, QemuConsole *src,
     case Q_KEY_CODE_C: c = 'c'; break;
     case Q_KEY_CODE_Q: c = 'q'; break;
     case Q_KEY_CODE_M: c = 'm'; ir_scancode = 0xC0; break;
-    case Q_KEY_CODE_F10: ir_scancode = 0xD0; break;
-    case Q_KEY_CODE_F9: ir_scancode = 0xD1; break;
-    case Q_KEY_CODE_HOME: ir_scancode = 0xF7; break;
-    case Q_KEY_CODE_TAB: ir_scancode = 0x13; break;
-    case Q_KEY_CODE_ESC: ir_scancode = 0xD8; break;
-    case Q_KEY_CODE_POWER: ir_scancode = 0xD5; break;
-    case Q_KEY_CODE_BACKSPACE: c = 0x7f; ir_scancode = 0xD8; break;
+    case Q_KEY_CODE_P: c = 'p'; ir_scancode = 0xD5; break;
+    case Q_KEY_CODE_VOLUMEUP:
+    case Q_KEY_CODE_F10:
+        ir_scancode = 0xD0;
+        break;
+    case Q_KEY_CODE_VOLUMEDOWN:
+    case Q_KEY_CODE_F9:
+        ir_scancode = 0xD1;
+        break;
+    case Q_KEY_CODE_AUDIOMUTE:
+        ir_scancode = 0xC0;
+        break;
+    case Q_KEY_CODE_HOME:
+        ir_scancode = 0xF7;
+        break;
+    case Q_KEY_CODE_MENU:
+    case Q_KEY_CODE_TAB:
+        ir_scancode = 0x13;
+        break;
+    case Q_KEY_CODE_ESC:
+        ir_scancode = 0xD8;
+        break;
+    case Q_KEY_CODE_POWER:
+        ir_scancode = 0xD5;
+        break;
+    case Q_KEY_CODE_BACKSPACE:
+        c = 0x7f;
+        ir_scancode = 0xD8;
+        break;
     default:
         break;
     }
