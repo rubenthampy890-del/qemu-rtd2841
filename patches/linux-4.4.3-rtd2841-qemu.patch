@@ -217,7 +217,7 @@ index a013a835..31dda7ea 100755
  	} else {
  		caller = (char *)ptr->caller;
  		if (need_debug_cma_deferfree()) {
-@@ -1164,7 +1165,7 @@ void dvr_free_page_mesg(const struct page *page)
+@@ -1164,5 +1165,5 @@ void dvr_free_page_mesg(const struct page *page)
   		} else {
 -			BUG();
 +			return;
@@ -228,11 +228,12 @@ diff --git a/arch/arm/kernel/setup.c b/arch/arm/kernel/setup.c
 index 89b8279c..51373332 100755
 --- a/arch/arm/kernel/setup.c
 +++ b/arch/arm/kernel/setup.c
-@@ -967,10 +967,12 @@ void __init setup_arch(char **cmdline_p)
+@@ -967,10 +967,13 @@ void __init setup_arch(char **cmdline_p)
  
  	// RTK_patch: support atags to dtbs
  #ifdef CONFIG_BUILD_ARM_APPENDED_DTB_IMAGE_EXT
-+	if (be32_to_cpup((__be32 *)phys_to_virt(__atags_pointer)) != OF_DT_HEADER) {
++	if (__atags_pointer && !(__atags_pointer & 3) &&
++	    be32_to_cpup((__be32 *)phys_to_virt(__atags_pointer)) != OF_DT_HEADER) {
  	#ifdef CONFIG_ARM_ATAG_DTB_COMPAT_EXT
  		atags_to_fdt(phys_to_virt(__atags_pointer), &__dtb_start, 0x4000);
  	#endif

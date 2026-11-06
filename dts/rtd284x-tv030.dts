@@ -151,8 +151,7 @@
 
                 fb_reserved: framebuffer@3e000000 {
                         reg = <0x3e000000 0x00800000>;
-                        cma-ban;
-                        ban-not-used;
+                        no-map;
                 };
         };
 

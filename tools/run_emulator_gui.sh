@@ -1,10 +1,25 @@
 #!/bin/bash
 set -e
 
-REPO_ROOT="/Users/basilthampy/Documents/Qemu rtd"
-QEMU="/Users/basilthampy/.gemini/antigravity/scratch/tcl-firmware-re/qemu/build/qemu-system-aarch64"
-DTB="$REPO_ROOT/dts/rtd284x-tv030.dtb"
-KERNEL="$REPO_ROOT/build/phase3/kernel-smp-sdhci-20261026T141826Z/zImage"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Dynamic binary and asset discovery with environment variable overrides
+if [ -z "$QEMU" ]; then
+    for cand in \
+        "$REPO_ROOT/qemu/build/qemu-system-aarch64" \
+        "$REPO_ROOT/qemu-upstream/build/qemu-system-aarch64" \
+        "$HOME/.gemini/antigravity/scratch/tcl-firmware-re/qemu/build/qemu-system-aarch64" \
+        "$(which qemu-system-aarch64 2>/dev/null)"; do
+        if [ -n "$cand" ] && [ -x "$cand" ]; then
+            QEMU="$cand"
+            break
+        fi
+    done
+fi
+: "${QEMU:=qemu-system-aarch64}"
+: "${DTB:=$REPO_ROOT/dts/rtd284x-tv030.dtb}"
+: "${KERNEL:=$REPO_ROOT/build/phase3/kernel-smp-sdhci-20261026T141826Z/zImage}"
 
 # Select disk image: prioritize persistent Android overlay, fallback to base raw disk
 MODE="android"
@@ -16,16 +31,19 @@ if [ -n "$OVERLAY" ] && [ -f "$OVERLAY" ]; then
     DISK="$OVERLAY"
     DISK_FMT="qcow2"
     SNAPSHOT_OPT=""
+elif [ -n "$DISK" ] && [ -f "$DISK" ]; then
+    if [[ "$DISK" == *.qcow2 ]]; then
+        DISK_FMT="qcow2"
+    else
+        DISK_FMT="raw"
+    fi
+    SNAPSHOT_OPT=""
 elif [ "$MODE" == "android" ] && [ -f "$REPO_ROOT/build/phase3/emmc-android-overlay.qcow2" ]; then
     DISK="$REPO_ROOT/build/phase3/emmc-android-overlay.qcow2"
     DISK_FMT="qcow2"
     SNAPSHOT_OPT=""
-elif [ "$MODE" == "android" ] && [ -f "/private/tmp/opendtv-milestone6-2gv94ia1/emmc-persistent-overlay.qcow2" ]; then
-    DISK="/private/tmp/opendtv-milestone6-2gv94ia1/emmc-persistent-overlay.qcow2"
-    DISK_FMT="qcow2"
-    SNAPSHOT_OPT=""
 else
-    DISK="$REPO_ROOT/staging/emmc.raw"
+    DISK="${DISK:-$REPO_ROOT/staging/emmc.raw}"
     DISK_FMT="raw"
     SNAPSHOT_OPT=",snapshot=on"
     MODE="diag"

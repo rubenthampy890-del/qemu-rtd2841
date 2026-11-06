@@ -7,7 +7,11 @@
  * proprietary Mali or hardware GPU ioctls.
  */
 
+#if defined(__arm__) || defined(__i386__)
 typedef unsigned int size_t;
+#else
+typedef unsigned long size_t;
+#endif
 typedef signed char int8_t;
 typedef short int16_t;
 typedef int int32_t;
@@ -22,6 +26,7 @@ typedef unsigned long long uint64_t;
 extern void *calloc(size_t nmemb, size_t size);
 extern void free(void *ptr);
 extern void *memset(void *s, int c, size_t n);
+extern void *memcpy(void *dest, const void *src, size_t n);
 extern int strcmp(const char *s1, const char *s2);
 extern char *strstr(const char *haystack, const char *needle);
 extern int open(const char *pathname, int flags, ...);
@@ -196,11 +201,47 @@ typedef struct {
 } SwShader;
 
 typedef struct {
+    char name[32];
+    GLuint index;
+} SwAttribBinding;
+
+typedef struct {
     GLuint id;
     GLboolean linked;
     GLuint vertex_shader;
     GLuint fragment_shader;
+    SwAttribBinding attrib_bindings[8];
+    int num_attrib_bindings;
 } SwProgram;
+
+/* Vertex Attribute State */
+typedef struct {
+    GLint size;
+    GLenum type;
+    GLboolean normalized;
+    GLsizei stride;
+    const void *pointer;
+    GLboolean enabled;
+} SwVertexAttrib;
+
+/* Texture State */
+typedef struct {
+    GLsizei width;
+    GLsizei height;
+    GLenum format;
+    uint32_t *pixels;
+} SwTexture;
+
+typedef struct {
+    float x;
+    float y;
+    float u;
+    float v;
+    float r;
+    float g;
+    float b;
+    float a;
+} SwVertex;
 
 static EGLint g_last_error = EGL_SUCCESS;
 static SwContext *g_current_context = NULL;
@@ -214,8 +255,43 @@ static SwProgram g_programs[32];
 static int g_num_programs = 0;
 static GLuint g_current_program = 0;
 
+static SwVertexAttrib g_vertex_attribs[4];
+static SwTexture g_textures[64];
+static GLuint g_bound_texture = 0;
+
 static float g_clear_color[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+static float g_uniform_color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+static GLint g_uniform_sampler = 0;
 static GLint g_viewport[4] = {0, 0, 1920, 1080};
+static GLboolean g_blend_enabled = GL_FALSE;
+static GLint g_pack_alignment = 4;
+static GLint g_unpack_alignment = 4;
+static int g_fb_fd = -1;
+static void *g_fb_map = NULL;
+static size_t g_fb_map_size = 0;
+
+static inline void *sys_mmap2(void *addr, unsigned long length, long prot,
+                             long flags, long fd, unsigned long pgoff) {
+    register long r7 __asm__("r7") = 192; /* __NR_mmap2 */
+    register long r0 __asm__("r0") = (long)addr;
+    register long r1 __asm__("r1") = (long)length;
+    register long r2 __asm__("r2") = prot;
+    register long r3 __asm__("r3") = flags;
+    register long r4 __asm__("r4") = fd;
+    register long r5 __asm__("r5") = (long)pgoff;
+    __asm__ volatile("swi #0" : "+r"(r0)
+                     : "r"(r7), "r"(r1), "r"(r2), "r"(r3), "r"(r4), "r"(r5)
+                     : "memory");
+    return (void *)r0;
+}
+
+static inline long sys_munmap(void *addr, unsigned long length) {
+    register long r7 __asm__("r7") = 91; /* __NR_munmap */
+    register long r0 __asm__("r0") = (long)addr;
+    register long r1 __asm__("r1") = (long)length;
+    __asm__ volatile("swi #0" : "+r"(r0) : "r"(r7), "r"(r1) : "memory");
+    return r0;
+}
 
 /* --- EGL 1.4 API Implementations --- */
 
@@ -240,6 +316,15 @@ EGLBoolean eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor) {
 
 __attribute__((visibility("default")))
 EGLBoolean eglTerminate(EGLDisplay dpy) {
+    if (g_fb_map) {
+        sys_munmap(g_fb_map, g_fb_map_size);
+        g_fb_map = NULL;
+        g_fb_map_size = 0;
+    }
+    if (g_fb_fd >= 0) {
+        close(g_fb_fd);
+        g_fb_fd = -1;
+    }
     return EGL_TRUE;
 }
 
@@ -428,6 +513,11 @@ EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config, void *win, c
     s->height = 1080;
     s->native_window = win;
     s->pixels = (uint32_t *)calloc(s->width * s->height, sizeof(uint32_t));
+    if (s->pixels) {
+        for (size_t i = 0; i < (size_t)s->width * s->height; i++) {
+            s->pixels[i] = 0xFF141824;
+        }
+    }
     s->refcount = 1;
     s->delete_pending = 0;
     return (EGLSurface)s;
@@ -490,8 +580,6 @@ EGLBoolean eglQuerySurface(EGLDisplay dpy, EGLSurface surface, EGLint attribute,
     return EGL_TRUE;
 }
 
-static int g_fb_fd = -1;
-
 __attribute__((visibility("default")))
 EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
     if (!surface || surface == EGL_NO_SURFACE) {
@@ -499,20 +587,38 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
         return EGL_FALSE;
     }
     SwSurface *s = (SwSurface *)surface;
-    if (s->is_window && s->pixels) {
+    if (!s->is_window) {
+        return EGL_TRUE;
+    }
+    if (!s->pixels) {
+        g_last_error = EGL_BAD_NATIVE_WINDOW;
+        return EGL_FALSE;
+    }
+    if (g_fb_fd < 0) {
+        g_fb_fd = open("/dev/graphics/fb0", 2 /* O_RDWR */);
         if (g_fb_fd < 0) {
-            g_fb_fd = open("/dev/graphics/fb0", 2 /* O_RDWR */);
-            if (g_fb_fd < 0) {
-                g_fb_fd = open("/dev/fb0", 2 /* O_RDWR */);
-            }
-        }
-        if (g_fb_fd >= 0) {
-            lseek(g_fb_fd, 0, 0 /* SEEK_SET */);
-            size_t bytes = (size_t)s->width * (size_t)s->height * 4;
-            if (bytes > 1920 * 1080 * 4) bytes = 1920 * 1080 * 4;
-            write(g_fb_fd, s->pixels, bytes);
+            g_fb_fd = open("/dev/fb0", 2 /* O_RDWR */);
         }
     }
+    if (g_fb_fd < 0) {
+        g_last_error = EGL_BAD_NATIVE_WINDOW;
+        return EGL_FALSE;
+    }
+    if (!g_fb_map) {
+        g_fb_map_size = 1920 * 1080 * 4;
+        g_fb_map = sys_mmap2(NULL, g_fb_map_size, 3 /* PROT_READ | PROT_WRITE */,
+                             1 /* MAP_SHARED */, g_fb_fd, 0);
+        if ((unsigned long)g_fb_map >= 0xFFFFF000UL) {
+            g_fb_map = NULL;
+            g_last_error = EGL_BAD_ALLOC;
+            return EGL_FALSE;
+        }
+    }
+
+    size_t copy_bytes = (size_t)s->width * (size_t)s->height * 4;
+    if (copy_bytes > g_fb_map_size) copy_bytes = g_fb_map_size;
+    memcpy(g_fb_map, s->pixels, copy_bytes);
+    __asm__ volatile("dmb sy" ::: "memory");
     return EGL_TRUE;
 }
 
@@ -596,13 +702,56 @@ void glGetIntegerv(GLenum pname, GLint *params) {
     }
 }
 
+static int validate_shader_source(GLenum type, const char *src) {
+    if (!src) return 0;
+
+    /* A valid shader must contain a main function */
+    const char *main_pos = strstr(src, "main");
+    if (!main_pos) return 0;
+
+    /* Verify main has parentheses '(' and ')' */
+    const char *open_paren = strstr(main_pos, "(");
+    if (!open_paren) return 0;
+    const char *close_paren = strstr(open_paren, ")");
+    if (!close_paren) return 0;
+
+    /* Check balanced braces '{' and '}' */
+    int brace_depth = 0;
+    int has_brace = 0;
+    for (const char *p = src; *p; p++) {
+        if (*p == '{') {
+            brace_depth++;
+            has_brace = 1;
+        } else if (*p == '}') {
+            brace_depth--;
+            if (brace_depth < 0) return 0;
+        }
+    }
+    if (!has_brace || brace_depth != 0) return 0;
+
+    /* Reject invalid isolated keywords (e.g. "uniform" alone without declaration) */
+    const char *u = strstr(src, "uniform");
+    while (u) {
+        if (u == src || *(u - 1) == ' ' || *(u - 1) == '\t' || *(u - 1) == '\n' || *(u - 1) == ';') {
+            const char *after = u + 7;
+            while (*after == ' ' || *after == '\t' || *after == '\n') after++;
+            if (*after == ';' || *after == '}' || *after == ')' || *after == '\0') {
+                return 0;
+            }
+        }
+        u = strstr(u + 7, "uniform");
+    }
+
+    return 1;
+}
+
 __attribute__((visibility("default")))
 GLuint glCreateShader(GLenum type) {
     if (g_num_shaders >= 63) return 0;
     GLuint id = (GLuint)(++g_num_shaders);
     g_shaders[id].id = id;
     g_shaders[id].type = type;
-    g_shaders[id].compiled = GL_TRUE;
+    g_shaders[id].compiled = GL_FALSE;
     g_shaders[id].source = NULL;
     return id;
 }
@@ -648,14 +797,7 @@ __attribute__((visibility("default")))
 void glCompileShader(GLuint shader) {
     if (shader > 0 && shader < 64) {
         const char *src = g_shaders[shader].source;
-        if (!src) {
-            g_shaders[shader].compiled = GL_FALSE;
-            return;
-        }
-        if (strstr(src, "void main") || strstr(src, "precision") ||
-            strstr(src, "gl_Position") || strstr(src, "gl_FragColor") ||
-            strstr(src, "attribute") || strstr(src, "uniform") ||
-            strstr(src, "varying")) {
+        if (src && validate_shader_source(g_shaders[shader].type, src)) {
             g_shaders[shader].compiled = GL_TRUE;
         } else {
             g_shaders[shader].compiled = GL_FALSE;
@@ -707,7 +849,10 @@ GLuint glCreateProgram(void) {
     if (g_num_programs >= 31) return 0;
     GLuint id = (GLuint)(++g_num_programs);
     g_programs[id].id = id;
-    g_programs[id].linked = GL_TRUE;
+    g_programs[id].linked = GL_FALSE;
+    g_programs[id].vertex_shader = 0;
+    g_programs[id].fragment_shader = 0;
+    g_programs[id].num_attrib_bindings = 0;
     return id;
 }
 
@@ -723,15 +868,47 @@ void glAttachShader(GLuint program, GLuint shader) {
 }
 
 __attribute__((visibility("default")))
-void glDetachShader(GLuint program, GLuint shader) {}
+void glDetachShader(GLuint program, GLuint shader) {
+    if (program > 0 && program < 32) {
+        if (g_programs[program].vertex_shader == shader) g_programs[program].vertex_shader = 0;
+        if (g_programs[program].fragment_shader == shader) g_programs[program].fragment_shader = 0;
+    }
+}
 
 __attribute__((visibility("default")))
-void glBindAttribLocation(GLuint program, GLuint index, const GLchar *name) {}
+void glBindAttribLocation(GLuint program, GLuint index, const GLchar *name) {
+    if (program > 0 && program < 32 && name && index < 4) {
+        SwProgram *p = &g_programs[program];
+        for (int i = 0; i < p->num_attrib_bindings; i++) {
+            if (strcmp(p->attrib_bindings[i].name, name) == 0) {
+                p->attrib_bindings[i].index = index;
+                return;
+            }
+        }
+        if (p->num_attrib_bindings < 8) {
+            int k = p->num_attrib_bindings++;
+            size_t len = 0;
+            while (name[len] && len < 31) {
+                p->attrib_bindings[k].name[len] = name[len];
+                len++;
+            }
+            p->attrib_bindings[k].name[len] = '\0';
+            p->attrib_bindings[k].index = index;
+        }
+    }
+}
 
 __attribute__((visibility("default")))
 void glLinkProgram(GLuint program) {
     if (program > 0 && program < 32) {
-        g_programs[program].linked = GL_TRUE;
+        GLuint vs = g_programs[program].vertex_shader;
+        GLuint fs = g_programs[program].fragment_shader;
+        if (vs > 0 && vs < 64 && fs > 0 && fs < 64 &&
+            g_shaders[vs].compiled == GL_TRUE && g_shaders[fs].compiled == GL_TRUE) {
+            g_programs[program].linked = GL_TRUE;
+        } else {
+            g_programs[program].linked = GL_FALSE;
+        }
     }
 }
 
@@ -739,7 +916,9 @@ __attribute__((visibility("default")))
 void glGetProgramiv(GLuint program, GLenum pname, GLint *params) {
     if (!params) return;
     switch (pname) {
-        case GL_LINK_STATUS: *params = GL_TRUE; break;
+        case GL_LINK_STATUS:
+            *params = (program > 0 && program < 32) ? g_programs[program].linked : GL_FALSE;
+            break;
         case GL_INFO_LOG_LENGTH: *params = 0; break;
         case GL_ACTIVE_ATTRIBUTES: *params = 2; break;
         case GL_ACTIVE_UNIFORMS: *params = 4; break;
@@ -759,20 +938,37 @@ void glUseProgram(GLuint program) {
 }
 
 __attribute__((visibility("default")))
-void glDeleteProgram(GLuint program) {}
+void glDeleteProgram(GLuint program) {
+    if (program > 0 && program < 32) {
+        g_programs[program].linked = GL_FALSE;
+        g_programs[program].vertex_shader = 0;
+        g_programs[program].fragment_shader = 0;
+        g_programs[program].num_attrib_bindings = 0;
+    }
+}
 
 __attribute__((visibility("default")))
 GLint glGetAttribLocation(GLuint program, const GLchar *name) {
     if (!name) return -1;
-    if (strstr(name, "pos") || strstr(name, "Pos")) return 0;
-    if (strstr(name, "tex") || strstr(name, "Tex")) return 1;
+    if (program > 0 && program < 32) {
+        SwProgram *p = &g_programs[program];
+        for (int i = 0; i < p->num_attrib_bindings; i++) {
+            if (strcmp(p->attrib_bindings[i].name, name) == 0) {
+                return (GLint)p->attrib_bindings[i].index;
+            }
+        }
+    }
+    if (strstr(name, "pos") || strstr(name, "Pos") || strstr(name, "position") || strstr(name, "Position") || strstr(name, "vPosition")) return 0;
+    if (strstr(name, "tex") || strstr(name, "Tex") || strstr(name, "coord") || strstr(name, "Coord")) return 1;
+    if (strstr(name, "col") || strstr(name, "Col") || strstr(name, "color") || strstr(name, "Color")) return 2;
     return 0;
 }
 
 __attribute__((visibility("default")))
 GLint glGetUniformLocation(GLuint program, const GLchar *name) {
     if (!name) return -1;
-    /* Return a deterministic, non-negative uniform location */
+    if (strstr(name, "color") || strstr(name, "Color") || strstr(name, "u_color") || strstr(name, "uColor")) return 0;
+    if (strstr(name, "tex") || strstr(name, "Tex") || strstr(name, "sampler") || strstr(name, "u_texture")) return 1;
     uint32_t h = 0;
     for (const char *p = name; *p; p++) h = (h * 31) + *p;
     return (GLint)(h % 16);
@@ -782,40 +978,200 @@ __attribute__((visibility("default")))
 void glUniform1f(GLint location, GLfloat v0) {}
 
 __attribute__((visibility("default")))
-void glUniform1i(GLint location, GLint v0) {}
+void glUniform1i(GLint location, GLint v0) {
+    g_uniform_sampler = v0;
+}
 
 __attribute__((visibility("default")))
-void glUniform4fv(GLint location, GLsizei count, const GLfloat *value) {}
+void glUniform4fv(GLint location, GLsizei count, const GLfloat *value) {
+    if (value && count >= 1) {
+        g_uniform_color[0] = value[0];
+        g_uniform_color[1] = value[1];
+        g_uniform_color[2] = value[2];
+        g_uniform_color[3] = value[3];
+    }
+}
+
+__attribute__((visibility("default")))
+void glUniform4f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3) {
+    g_uniform_color[0] = v0;
+    g_uniform_color[1] = v1;
+    g_uniform_color[2] = v2;
+    g_uniform_color[3] = v3;
+}
 
 __attribute__((visibility("default")))
 void glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) {}
 
 __attribute__((visibility("default")))
-void glEnableVertexAttribArray(GLuint index) {}
-
-__attribute__((visibility("default")))
-void glDisableVertexAttribArray(GLuint index) {}
-
-__attribute__((visibility("default")))
-void glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void *pointer) {}
-
-__attribute__((visibility("default")))
-void glGenTextures(GLsizei n, GLuint *textures) {
-    for (int i = 0; i < n; i++) textures[i] = (GLuint)(i + 1);
+void glEnableVertexAttribArray(GLuint index) {
+    if (index < 4) {
+        g_vertex_attribs[index].enabled = GL_TRUE;
+    }
 }
 
 __attribute__((visibility("default")))
-void glBindTexture(GLenum target, GLuint texture) {}
+void glDisableVertexAttribArray(GLuint index) {
+    if (index < 4) {
+        g_vertex_attribs[index].enabled = GL_FALSE;
+    }
+}
+
+__attribute__((visibility("default")))
+void glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void *pointer) {
+    if (index < 4) {
+        g_vertex_attribs[index].size = size;
+        g_vertex_attribs[index].type = type;
+        g_vertex_attribs[index].normalized = normalized;
+        g_vertex_attribs[index].stride = stride;
+        g_vertex_attribs[index].pointer = pointer;
+    }
+}
+
+static GLuint g_next_texture_id = 1;
+
+__attribute__((visibility("default")))
+void glGenTextures(GLsizei n, GLuint *textures) {
+    if (!textures || n <= 0) return;
+    for (GLsizei i = 0; i < n; i++) {
+        GLuint id = 0;
+        for (GLuint try_id = 1; try_id < 64; try_id++) {
+            GLuint candidate = ((g_next_texture_id - 1 + try_id) % 63) + 1;
+            if (!g_textures[candidate].pixels && g_textures[candidate].width == 0) {
+                id = candidate;
+                g_next_texture_id = (candidate % 63) + 1;
+                break;
+            }
+        }
+        if (id == 0) id = (GLuint)(i + 1);
+        textures[i] = id;
+    }
+}
+
+__attribute__((visibility("default")))
+void glBindTexture(GLenum target, GLuint texture) {
+    if (texture < 64) {
+        g_bound_texture = texture;
+    }
+}
 
 __attribute__((visibility("default")))
 void glTexParameteri(GLenum target, GLenum pname, GLint param) {}
 
 __attribute__((visibility("default")))
 void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height,
-                 GLint border, GLenum format, GLenum type, const void *pixels) {}
+                 GLint border, GLenum format, GLenum type, const void *pixels) {
+    if (width <= 0 || height <= 0) return;
+    GLuint id = g_bound_texture;
+    if (id == 0 || id >= 64) return;
+
+    if (g_textures[id].pixels) {
+        free(g_textures[id].pixels);
+        g_textures[id].pixels = NULL;
+    }
+
+    size_t num_pixels = (size_t)width * (size_t)height;
+    uint32_t *tex_data = (uint32_t *)calloc(num_pixels, sizeof(uint32_t));
+    if (!tex_data) return;
+
+    g_textures[id].width = width;
+    g_textures[id].height = height;
+    g_textures[id].format = format;
+    g_textures[id].pixels = tex_data;
+
+    if (!pixels) return;
+
+    const uint8_t *src_bytes = (const uint8_t *)pixels;
+    int align = (g_unpack_alignment == 1 || g_unpack_alignment == 2 || g_unpack_alignment == 4 || g_unpack_alignment == 8) ? g_unpack_alignment : 4;
+
+    if (format == GL_RGBA && type == GL_UNSIGNED_BYTE) {
+        size_t row_bytes = (size_t)width * 4;
+        size_t row_stride = (row_bytes + align - 1) & ~((size_t)align - 1);
+        for (GLsizei y = 0; y < height; y++) {
+            const uint8_t *row_src = src_bytes + (size_t)y * row_stride;
+            for (GLsizei x = 0; x < width; x++) {
+                uint8_t r = row_src[x * 4 + 0];
+                uint8_t g = row_src[x * 4 + 1];
+                uint8_t b = row_src[x * 4 + 2];
+                uint8_t a = row_src[x * 4 + 3];
+                tex_data[(size_t)y * (size_t)width + (size_t)x] =
+                    ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+            }
+        }
+    } else if (format == GL_RGB && type == GL_UNSIGNED_BYTE) {
+        size_t row_bytes = (size_t)width * 3;
+        size_t row_stride = (row_bytes + align - 1) & ~((size_t)align - 1);
+        for (GLsizei y = 0; y < height; y++) {
+            const uint8_t *row_src = src_bytes + (size_t)y * row_stride;
+            for (GLsizei x = 0; x < width; x++) {
+                uint8_t r = row_src[x * 3 + 0];
+                uint8_t g = row_src[x * 3 + 1];
+                uint8_t b = row_src[x * 3 + 2];
+                tex_data[(size_t)y * (size_t)width + (size_t)x] =
+                    (0xFF000000U) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+            }
+        }
+    } else if (format == 0x80E1 /* GL_BGRA_EXT */ && type == GL_UNSIGNED_BYTE) {
+        size_t row_bytes = (size_t)width * 4;
+        size_t row_stride = (row_bytes + align - 1) & ~((size_t)align - 1);
+        for (GLsizei y = 0; y < height; y++) {
+            const uint8_t *row_src = src_bytes + (size_t)y * row_stride;
+            for (GLsizei x = 0; x < width; x++) {
+                uint8_t b = row_src[x * 4 + 0];
+                uint8_t g = row_src[x * 4 + 1];
+                uint8_t r = row_src[x * 4 + 2];
+                uint8_t a = row_src[x * 4 + 3];
+                tex_data[(size_t)y * (size_t)width + (size_t)x] =
+                    ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+            }
+        }
+    } else if (format == 0x1909 /* GL_LUMINANCE */ && type == GL_UNSIGNED_BYTE) {
+        size_t row_bytes = (size_t)width;
+        size_t row_stride = (row_bytes + align - 1) & ~((size_t)align - 1);
+        for (GLsizei y = 0; y < height; y++) {
+            const uint8_t *row_src = src_bytes + (size_t)y * row_stride;
+            for (GLsizei x = 0; x < width; x++) {
+                uint8_t l = row_src[x];
+                tex_data[(size_t)y * (size_t)width + (size_t)x] =
+                    (0xFF000000U) | ((uint32_t)l << 16) | ((uint32_t)l << 8) | (uint32_t)l;
+            }
+        }
+    } else if (format == 0x190A /* GL_LUMINANCE_ALPHA */ && type == GL_UNSIGNED_BYTE) {
+        size_t row_bytes = (size_t)width * 2;
+        size_t row_stride = (row_bytes + align - 1) & ~((size_t)align - 1);
+        for (GLsizei y = 0; y < height; y++) {
+            const uint8_t *row_src = src_bytes + (size_t)y * row_stride;
+            for (GLsizei x = 0; x < width; x++) {
+                uint8_t l = row_src[x * 2 + 0];
+                uint8_t a = row_src[x * 2 + 1];
+                tex_data[(size_t)y * (size_t)width + (size_t)x] =
+                    ((uint32_t)a << 24) | ((uint32_t)l << 16) | ((uint32_t)l << 8) | (uint32_t)l;
+            }
+        }
+    } else {
+        for (size_t i = 0; i < num_pixels; i++) {
+            tex_data[i] = ((const uint32_t *)pixels)[i];
+        }
+    }
+}
 
 __attribute__((visibility("default")))
-void glDeleteTextures(GLsizei n, const GLuint *textures) {}
+void glDeleteTextures(GLsizei n, const GLuint *textures) {
+    if (!textures || n <= 0) return;
+    for (GLsizei i = 0; i < n; i++) {
+        GLuint id = textures[i];
+        if (id > 0 && id < 64) {
+            if (g_textures[id].pixels) {
+                free(g_textures[id].pixels);
+                g_textures[id].pixels = NULL;
+            }
+            g_textures[id].width = 0;
+            g_textures[id].height = 0;
+            g_textures[id].format = 0;
+            if (g_bound_texture == id) g_bound_texture = 0;
+        }
+    }
+}
 
 __attribute__((visibility("default")))
 void glGenFramebuffers(GLsizei n, GLuint *framebuffers) {
@@ -871,29 +1227,289 @@ void glClear(GLbitfield mask) {
 }
 
 __attribute__((visibility("default")))
-void glEnable(GLenum cap) {}
+void glEnable(GLenum cap) {
+    if (cap == 0x0BE2 /* GL_BLEND */) {
+        g_blend_enabled = GL_TRUE;
+    }
+}
 
 __attribute__((visibility("default")))
-void glDisable(GLenum cap) {}
+void glDisable(GLenum cap) {
+    if (cap == 0x0BE2 /* GL_BLEND */) {
+        g_blend_enabled = GL_FALSE;
+    }
+}
 
 __attribute__((visibility("default")))
 void glBlendFunc(GLenum sfactor, GLenum dfactor) {}
 
-__attribute__((visibility("default")))
-void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
-    if (g_current_draw_surface && g_current_draw_surface->pixels) {
-        int total = g_current_draw_surface->width * g_current_draw_surface->height;
-        uint32_t val = ((uint32_t)(g_clear_color[3] * 255.0f) << 24) |
-                       ((uint32_t)(g_clear_color[0] * 255.0f) << 16) |
-                       ((uint32_t)(g_clear_color[1] * 255.0f) << 8)  |
-                       (uint32_t)(g_clear_color[2] * 255.0f);
-        if (val == 0) {
-            val = 0xFF1A237E; /* Slate blue background layer */
-        }
-        for (int i = 0; i < total; i++) {
-            g_current_draw_surface->pixels[i] = val;
+static void get_attrib_float(int index, int vertex_idx, float *out, int count, float default_val) {
+    for (int k = 0; k < count; k++) out[k] = default_val;
+    if (index < 0 || index >= 4 || !g_vertex_attribs[index].enabled || !g_vertex_attribs[index].pointer) {
+        return;
+    }
+    SwVertexAttrib *va = &g_vertex_attribs[index];
+    int size = va->size > 0 ? va->size : 4;
+    int comp_count = size < count ? size : count;
+    int comp_size = 4;
+    if (va->type == 0x1401 /* GL_UNSIGNED_BYTE */ || va->type == 0x1400 /* GL_BYTE */) {
+        comp_size = 1;
+    } else if (va->type == 0x1402 /* GL_SHORT */ || va->type == 0x1403 /* GL_UNSIGNED_SHORT */) {
+        comp_size = 2;
+    } else if (va->type == 0x1406 /* GL_FLOAT */) {
+        comp_size = 4;
+    }
+    int effective_stride = va->stride > 0 ? va->stride : (size * comp_size);
+    const uint8_t *base = (const uint8_t *)va->pointer + (vertex_idx * effective_stride);
+
+    for (int k = 0; k < comp_count; k++) {
+        if (va->type == 0x1406 /* GL_FLOAT */) {
+            out[k] = *(const float *)(const void *)(base + k * 4);
+        } else if (va->type == 0x1401 /* GL_UNSIGNED_BYTE */) {
+            uint8_t b = *(base + k);
+            out[k] = va->normalized ? ((float)b / 255.0f) : (float)b;
+        } else if (va->type == 0x1402 /* GL_SHORT */) {
+            int16_t s = *(const int16_t *)(const void *)(base + k * 2);
+            out[k] = va->normalized ? ((float)s / 32767.0f) : (float)s;
         }
     }
+}
+
+static void fetch_vertex(int idx, SwVertex *v, int surf_width, int surf_height) {
+    float pos[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    get_attrib_float(0, idx, pos, 4, 0.0f);
+    if (pos[3] != 0.0f && pos[3] != 1.0f) {
+        pos[0] /= pos[3];
+        pos[1] /= pos[3];
+    }
+    v->x = (pos[0] + 1.0f) * 0.5f * (float)surf_width;
+    v->y = (1.0f - (pos[1] + 1.0f) * 0.5f) * (float)surf_height;
+
+    if (g_vertex_attribs[1].enabled) {
+        float uv[2] = {0.0f, 0.0f};
+        get_attrib_float(1, idx, uv, 2, 0.0f);
+        v->u = uv[0];
+        v->v = uv[1];
+    } else {
+        v->u = 0.0f;
+        v->v = 0.0f;
+    }
+
+    if (g_vertex_attribs[2].enabled) {
+        float col[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+        get_attrib_float(2, idx, col, 4, 1.0f);
+        v->r = col[0];
+        v->g = col[1];
+        v->b = col[2];
+        v->a = col[3];
+    } else {
+        v->r = g_uniform_color[0];
+        v->g = g_uniform_color[1];
+        v->b = g_uniform_color[2];
+        v->a = g_uniform_color[3];
+    }
+}
+
+static inline float cross2d(float x1, float y1, float x2, float y2) {
+    return x1 * y2 - y1 * x2;
+}
+
+static void rasterize_triangle(const SwVertex *v0_in, const SwVertex *v1_in, const SwVertex *v2_in) {
+    if (!g_current_draw_surface || !g_current_draw_surface->pixels) return;
+
+    SwVertex v0 = *v0_in;
+    SwVertex v1 = *v1_in;
+    SwVertex v2 = *v2_in;
+
+    int surf_width = g_current_draw_surface->width;
+    int surf_height = g_current_draw_surface->height;
+
+    float area = cross2d(v1.x - v0.x, v1.y - v0.y, v2.x - v0.x, v2.y - v0.y);
+    if (area == 0.0f) return;
+
+    if (area < 0.0f) {
+        SwVertex tmp = v1;
+        v1 = v2;
+        v2 = tmp;
+        area = -area;
+    }
+
+    float inv_area = 1.0f / area;
+
+    float min_xf = v0.x < v1.x ? (v0.x < v2.x ? v0.x : v2.x) : (v1.x < v2.x ? v1.x : v2.x);
+    float max_xf = v0.x > v1.x ? (v0.x > v2.x ? v0.x : v2.x) : (v1.x > v2.x ? v1.x : v2.x);
+    float min_yf = v0.y < v1.y ? (v0.y < v2.y ? v0.y : v2.y) : (v1.y < v2.y ? v1.y : v2.y);
+    float max_yf = v0.y > v1.y ? (v0.y > v2.y ? v0.y : v2.y) : (v1.y > v2.y ? v1.y : v2.y);
+
+    int min_x = (int)min_xf;
+    int max_x = (int)(max_xf + 1.0f);
+    int min_y = (int)min_yf;
+    int max_y = (int)(max_yf + 1.0f);
+
+    if (min_x < 0) min_x = 0;
+    if (min_y < 0) min_y = 0;
+    if (max_x >= surf_width) max_x = surf_width - 1;
+    if (max_y >= surf_height) max_y = surf_height - 1;
+
+    if (min_x > max_x || min_y > max_y) return;
+
+    SwTexture *tex = NULL;
+    if (g_vertex_attribs[1].enabled && g_bound_texture > 0 && g_bound_texture < 64) {
+        if (g_textures[g_bound_texture].pixels &&
+            g_textures[g_bound_texture].width > 0 &&
+            g_textures[g_bound_texture].height > 0) {
+            tex = &g_textures[g_bound_texture];
+        }
+    }
+
+    uint32_t *dst_pixels = g_current_draw_surface->pixels;
+
+    for (int y = min_y; y <= max_y; y++) {
+        float py = (float)y + 0.5f;
+        for (int x = min_x; x <= max_x; x++) {
+            float px = (float)x + 0.5f;
+
+            float e0 = cross2d(v2.x - v1.x, v2.y - v1.y, px - v1.x, py - v1.y);
+            float e1 = cross2d(v0.x - v2.x, v0.y - v2.y, px - v2.x, py - v2.y);
+            float e2 = cross2d(v1.x - v0.x, v1.y - v0.y, px - v0.x, py - v0.y);
+
+            if (e0 >= 0.0f && e1 >= 0.0f && e2 >= 0.0f) {
+                float w0 = e0 * inv_area;
+                float w1 = e1 * inv_area;
+                float w2 = e2 * inv_area;
+
+                float r = w0 * v0.r + w1 * v1.r + w2 * v2.r;
+                float g = w0 * v0.g + w1 * v1.g + w2 * v2.g;
+                float b = w0 * v0.b + w1 * v1.b + w2 * v2.b;
+                float a = w0 * v0.a + w1 * v1.a + w2 * v2.a;
+
+                if (tex) {
+                    float u = w0 * v0.u + w1 * v1.u + w2 * v2.u;
+                    float v = w0 * v0.v + w1 * v1.v + w2 * v2.v;
+
+                    float u_int = (float)((int)u);
+                    float v_int = (float)((int)v);
+                    u = u - u_int; if (u < 0.0f) u += 1.0f;
+                    v = v - v_int; if (v < 0.0f) v += 1.0f;
+
+                    int tx = (int)(u * (float)tex->width);
+                    int ty = (int)(v * (float)tex->height);
+                    if (tx < 0) tx = 0; if (tx >= tex->width) tx = tex->width - 1;
+                    if (ty < 0) ty = 0; if (ty >= tex->height) ty = tex->height - 1;
+
+                    uint32_t texel = tex->pixels[(size_t)ty * (size_t)tex->width + (size_t)tx];
+                    float ta = (float)((texel >> 24) & 0xff) / 255.0f;
+                    float tr = (float)((texel >> 16) & 0xff) / 255.0f;
+                    float tg = (float)((texel >> 8) & 0xff) / 255.0f;
+                    float tb = (float)(texel & 0xff) / 255.0f;
+
+                    r *= tr;
+                    g *= tg;
+                    b *= tb;
+                    a *= ta;
+                }
+
+                size_t pidx = (size_t)y * (size_t)surf_width + (size_t)x;
+                float out_r = r, out_g = g, out_b = b, out_a = a;
+
+                if (g_blend_enabled || a < 0.999f) {
+                    uint32_t dst_val = dst_pixels[pidx];
+                    float da = (float)((dst_val >> 24) & 0xff) / 255.0f;
+                    float dr = (float)((dst_val >> 16) & 0xff) / 255.0f;
+                    float dg = (float)((dst_val >> 8) & 0xff) / 255.0f;
+                    float db = (float)(dst_val & 0xff) / 255.0f;
+
+                    out_r = a * r + (1.0f - a) * dr;
+                    out_g = a * g + (1.0f - a) * dg;
+                    out_b = a * b + (1.0f - a) * db;
+                    out_a = a + (1.0f - a) * da;
+                }
+
+                uint32_t pr = (uint32_t)(out_r * 255.0f + 0.5f); if (pr > 255) pr = 255;
+                uint32_t pg = (uint32_t)(out_g * 255.0f + 0.5f); if (pg > 255) pg = 255;
+                uint32_t pb = (uint32_t)(out_b * 255.0f + 0.5f); if (pb > 255) pb = 255;
+                uint32_t pa = (uint32_t)(out_a * 255.0f + 0.5f); if (pa > 255) pa = 255;
+
+                dst_pixels[pidx] = (pa << 24) | (pr << 16) | (pg << 8) | pb;
+            }
+        }
+    }
+}
+
+__attribute__((visibility("default")))
+void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
+    if (count <= 0) return;
+    if (!g_current_draw_surface || !g_current_draw_surface->pixels) return;
+    if (!g_vertex_attribs[0].enabled || !g_vertex_attribs[0].pointer) return;
+
+    int sw = g_current_draw_surface->width;
+    int sh = g_current_draw_surface->height;
+
+    if (mode == 0x0004 /* GL_TRIANGLES */) {
+        for (GLint i = 0; i + 2 < count; i += 3) {
+            SwVertex v0, v1, v2;
+            fetch_vertex(first + i, &v0, sw, sh);
+            fetch_vertex(first + i + 1, &v1, sw, sh);
+            fetch_vertex(first + i + 2, &v2, sw, sh);
+            rasterize_triangle(&v0, &v1, &v2);
+        }
+    } else if (mode == 0x0005 /* GL_TRIANGLE_STRIP */) {
+        for (GLint i = 0; i + 2 < count; i++) {
+            SwVertex v0, v1, v2;
+            fetch_vertex(first + i, &v0, sw, sh);
+            fetch_vertex(first + i + 1, &v1, sw, sh);
+            fetch_vertex(first + i + 2, &v2, sw, sh);
+            rasterize_triangle(&v0, &v1, &v2);
+        }
+    } else if (mode == 0x0006 /* GL_TRIANGLE_FAN */) {
+        for (GLint i = 1; i + 1 < count; i++) {
+            SwVertex v0, v1, v2;
+            fetch_vertex(first, &v0, sw, sh);
+            fetch_vertex(first + i, &v1, sw, sh);
+            fetch_vertex(first + i + 1, &v2, sw, sh);
+            rasterize_triangle(&v0, &v1, &v2);
+        }
+    }
+}
+
+__attribute__((visibility("default")))
+void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices) {
+    if (count <= 0 || !indices) return;
+    if (!g_current_draw_surface || !g_current_draw_surface->pixels) return;
+    if (!g_vertex_attribs[0].enabled || !g_vertex_attribs[0].pointer) return;
+
+    int sw = g_current_draw_surface->width;
+    int sh = g_current_draw_surface->height;
+
+    #define GET_ELEM_IDX(k) ((type == 0x1401 /* GL_UNSIGNED_BYTE */) ? \
+        (int)((const uint8_t *)indices)[(k)] : (int)((const uint16_t *)indices)[(k)])
+
+    if (mode == 0x0004 /* GL_TRIANGLES */) {
+        for (GLsizei i = 0; i + 2 < count; i += 3) {
+            SwVertex v0, v1, v2;
+            fetch_vertex(GET_ELEM_IDX(i), &v0, sw, sh);
+            fetch_vertex(GET_ELEM_IDX(i + 1), &v1, sw, sh);
+            fetch_vertex(GET_ELEM_IDX(i + 2), &v2, sw, sh);
+            rasterize_triangle(&v0, &v1, &v2);
+        }
+    } else if (mode == 0x0005 /* GL_TRIANGLE_STRIP */) {
+        for (GLsizei i = 0; i + 2 < count; i++) {
+            SwVertex v0, v1, v2;
+            fetch_vertex(GET_ELEM_IDX(i), &v0, sw, sh);
+            fetch_vertex(GET_ELEM_IDX(i + 1), &v1, sw, sh);
+            fetch_vertex(GET_ELEM_IDX(i + 2), &v2, sw, sh);
+            rasterize_triangle(&v0, &v1, &v2);
+        }
+    } else if (mode == 0x0006 /* GL_TRIANGLE_FAN */) {
+        for (GLsizei i = 1; i + 1 < count; i++) {
+            SwVertex v0, v1, v2;
+            fetch_vertex(GET_ELEM_IDX(0), &v0, sw, sh);
+            fetch_vertex(GET_ELEM_IDX(i), &v1, sw, sh);
+            fetch_vertex(GET_ELEM_IDX(i + 1), &v2, sw, sh);
+            rasterize_triangle(&v0, &v1, &v2);
+        }
+    }
+    #undef GET_ELEM_IDX
 }
 
 __attribute__((visibility("default")))
@@ -906,6 +1522,7 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format
 
     SwSurface *s = g_current_read_surface;
     uint8_t *dst = (uint8_t *)pixels;
+    int align = (g_pack_alignment == 1 || g_pack_alignment == 2 || g_pack_alignment == 4 || g_pack_alignment == 8) ? g_pack_alignment : 4;
 
     for (GLint row = 0; row < height; row++) {
         GLint sy = y + row;
@@ -920,19 +1537,26 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format
             uint8_t g = (uint8_t)((val >> 8) & 0xff);
             uint8_t b = (uint8_t)(val & 0xff);
 
-            size_t idx = ((size_t)row * (size_t)width + (size_t)col) * 4;
             if (format == GL_RGBA) {
+                size_t row_bytes = (size_t)width * 4;
+                size_t row_stride = (row_bytes + align - 1) & ~((size_t)align - 1);
+                size_t idx = (size_t)row * row_stride + (size_t)col * 4;
                 dst[idx + 0] = r;
                 dst[idx + 1] = g;
                 dst[idx + 2] = b;
                 dst[idx + 3] = a;
             } else if (format == GL_RGB) {
-                size_t rgb_idx = ((size_t)row * (size_t)width + (size_t)col) * 3;
-                dst[rgb_idx + 0] = r;
-                dst[rgb_idx + 1] = g;
-                dst[rgb_idx + 2] = b;
+                size_t row_bytes = (size_t)width * 3;
+                size_t row_stride = (row_bytes + align - 1) & ~((size_t)align - 1);
+                size_t idx = (size_t)row * row_stride + (size_t)col * 3;
+                dst[idx + 0] = r;
+                dst[idx + 1] = g;
+                dst[idx + 2] = b;
             } else {
                 /* Default BGRA / native */
+                size_t row_bytes = (size_t)width * 4;
+                size_t row_stride = (row_bytes + align - 1) & ~((size_t)align - 1);
+                size_t idx = (size_t)row * row_stride + (size_t)col * 4;
                 dst[idx + 0] = b;
                 dst[idx + 1] = g;
                 dst[idx + 2] = r;
@@ -943,7 +1567,17 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format
 }
 
 __attribute__((visibility("default")))
-void glPixelStorei(GLenum pname, GLint param) {}
+void glPixelStorei(GLenum pname, GLint param) {
+    if (pname == 0x0D05 /* GL_PACK_ALIGNMENT */) {
+        if (param == 1 || param == 2 || param == 4 || param == 8) {
+            g_pack_alignment = param;
+        }
+    } else if (pname == 0x0CF5 /* GL_UNPACK_ALIGNMENT */) {
+        if (param == 1 || param == 2 || param == 4 || param == 8) {
+            g_unpack_alignment = param;
+        }
+    }
+}
 
 __attribute__((visibility("default")))
 void glFlush(void) {}
@@ -963,5 +1597,11 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
     if (strcmp(procname, "eglWaitSyncKHR") == 0) return (__eglMustCastToProperFunctionPointerType)eglWaitSyncKHR;
     if (strcmp(procname, "eglDupNativeFenceFDANDROID") == 0) return (__eglMustCastToProperFunctionPointerType)eglDupNativeFenceFDANDROID;
     if (strcmp(procname, "glEGLImageTargetTexture2DOES") == 0) return (__eglMustCastToProperFunctionPointerType)glEGLImageTargetTexture2DOES;
+    if (strcmp(procname, "glDrawElements") == 0) return (__eglMustCastToProperFunctionPointerType)glDrawElements;
+    if (strcmp(procname, "glVertexAttribPointer") == 0) return (__eglMustCastToProperFunctionPointerType)glVertexAttribPointer;
+    if (strcmp(procname, "glEnableVertexAttribArray") == 0) return (__eglMustCastToProperFunctionPointerType)glEnableVertexAttribArray;
+    if (strcmp(procname, "glDisableVertexAttribArray") == 0) return (__eglMustCastToProperFunctionPointerType)glDisableVertexAttribArray;
+    if (strcmp(procname, "glUniform4f") == 0) return (__eglMustCastToProperFunctionPointerType)glUniform4f;
+    if (strcmp(procname, "glUniform4fv") == 0) return (__eglMustCastToProperFunctionPointerType)glUniform4fv;
     return NULL;
 }

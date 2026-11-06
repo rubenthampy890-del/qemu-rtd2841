@@ -434,7 +434,12 @@ static const struct CardDef tv_cards[6] = {
 
 static void paint_tcl_tv_display(void) {
     long fb = my_syscall3(5 /* __NR_open */, (long)str_fb_path, 2 /* O_RDWR */, 0);
-    if (fb < 0) return;
+    if (fb < 0) {
+        print_str("[-] FAILED: open /dev/fb0, rc=");
+        print_dec(fb);
+        print_str("\n");
+        return;
+    }
 
     /* 1. Dark Backdrop */
     fill_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_DARK_BG);
@@ -521,9 +526,26 @@ static void paint_tcl_tv_display(void) {
     draw_smpte_bars(990, 70);
     fill_rect(0, 1060, FB_WIDTH, 20, COLOR_BLACK);
 
-    /* 8. Write canvas directly to /dev/fb0 via row writes (guaranteed to flush to MMIO 0x3e000000) */
-    for (int r = 0; r < FB_HEIGHT; r++) {
-        my_syscall3(4 /* __NR_write */, fb, (long)&g_canvas[r * FB_WIDTH], FB_WIDTH * sizeof(unsigned int));
+    /* 8. Map canvas directly to /dev/fb0 via mmap2 (guaranteed to flush to MMIO 0x3e000000) */
+    long frame_bytes = FB_WIDTH * FB_HEIGHT * sizeof(unsigned int);
+    void *fb_mem = (void *)my_syscall6(192 /* __NR_mmap2 */, 0, frame_bytes, 3 /* PROT_READ|PROT_WRITE */, 1 /* MAP_SHARED */, fb, 0);
+    if ((long)fb_mem < 0 && (long)fb_mem > -4096) {
+        print_str("[-] FAILED: mmap /dev/fb0, rc=");
+        print_dec((long)fb_mem);
+        print_str(", falling back to row writes\n");
+        long total_written = 0;
+        for (int r = 0; r < FB_HEIGHT; r++) {
+            long wrc = my_syscall3(4 /* __NR_write */, fb, (long)&g_canvas[r * FB_WIDTH], FB_WIDTH * sizeof(unsigned int));
+            if (wrc > 0) total_written += wrc;
+        }
+        print_str("[+] Boot splash written to /dev/fb0, bytes=");
+        print_dec(total_written);
+        print_str("\n");
+    } else {
+        my_memcpy(fb_mem, g_canvas, frame_bytes);
+        my_memory_barrier();
+        my_syscall2(91 /* __NR_munmap */, (long)fb_mem, frame_bytes);
+        print_str("[+] Boot splash display mapped and copied to /dev/fb0 (8294400 bytes)\n");
     }
 
     my_syscall1(6 /* __NR_close */, fb);
@@ -540,6 +562,9 @@ static int run_process(const char *cmd, char *const proc_argv[], int wait) {
         return (int)pid;
     }
     if (pid == 0) {
+        for (int fd = 3; fd < 1024; fd++) {
+            my_syscall1(6 /* __NR_close */, fd);
+        }
         long exec_rc = my_syscall3(11 /* __NR_execve */, (long)cmd,
                                    (long)proc_argv, (long)envp);
         print_str("[-] FAILED: execve failed for ");
@@ -652,6 +677,8 @@ static unsigned int prop_area_alloc(void *area, unsigned int size) {
 }
 
 static int prop_area_set(void *area, const char *key, const char *val) {
+    if (my_strlen(val) >= 92) return -1;
+
     struct prop_area_hdr *hdr = (struct prop_area_hdr *)area;
     char *data = (char *)area + 128;
     unsigned int current_bt_off = 0;
@@ -731,14 +758,14 @@ static int prop_area_set(void *area, const char *key, const char *val) {
 
     struct prop_bt *leaf = (struct prop_bt *)(data + current_bt_off);
     unsigned int vallen = (unsigned int)my_strlen(val);
-    if (vallen >= 92) vallen = 91;
+    struct prop_info *info;
 
     if (leaf->prop == 0) {
         unsigned int keylen = (unsigned int)my_strlen(key);
         unsigned int info_sz = 96 + keylen + 1;
         unsigned int info_off = prop_area_alloc(area, info_sz);
         if (!info_off) return -1;
-        struct prop_info *info = (struct prop_info *)(data + info_off);
+        info = (struct prop_info *)(data + info_off);
         my_memset(info, 0, (info_sz + 3) & ~3);
         info->serial = (vallen << 24);
         my_memcpy(info->value, val, vallen);
@@ -749,7 +776,7 @@ static int prop_area_set(void *area, const char *key, const char *val) {
     } else {
         /* Read-only properties (ro.*) cannot be overwritten once set */
         if (my_strncmp(key, "ro.", 3) == 0) {
-            return 0; /* Preserve initial read-only property value */
+            return -1;
         }
         struct prop_info *info = (struct prop_info *)(data + leaf->prop);
         unsigned int old_serial = info->serial;
@@ -762,6 +789,8 @@ static int prop_area_set(void *area, const char *key, const char *val) {
     }
 
     hdr->serial++;
+    my_syscall6(240 /* __NR_futex */, (long)&info->serial, 1 /* FUTEX_WAKE */, 0x7fffffff /* INT_MAX */, 0, 0, 0);
+    my_syscall6(240 /* __NR_futex */, (long)&hdr->serial, 1 /* FUTEX_WAKE */, 0x7fffffff /* INT_MAX */, 0, 0, 0);
     return 0;
 }
 
@@ -1051,6 +1080,12 @@ static int start_property_service(void *prop_area) {
                 continue;
             }
 
+            struct my_timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+            my_syscall5(294 /* __NR_setsockopt */, cfd, 1 /* SOL_SOCKET */,
+                        20 /* SO_RCVTIMEO */, (long)&tv, sizeof(tv));
+            my_syscall5(294 /* __NR_setsockopt */, cfd, 1 /* SOL_SOCKET */,
+                        21 /* SO_SNDTIMEO */, (long)&tv, sizeof(tv));
+
             uint32_t cmd = 0;
             long r = my_read_all(cfd, &cmd, 4);
             if (r == 4) {
@@ -1063,9 +1098,18 @@ static int start_property_service(void *prop_area) {
                             uint32_t vallen = 0;
                             char val[512];
                             val[0] = '\0';
-                            if (my_read_all(cfd, &vallen, 4) == 4 && vallen < 512) {
+                            if (my_read_all(cfd, &vallen, 4) == 4) {
+                                if (vallen >= 92) {
+                                    uint32_t resp = 1; /* error */
+                                    my_syscall3(4 /* __NR_write */, cfd, (long)&resp, 4);
+                                    my_syscall1(6 /* __NR_close */, cfd);
+                                    continue;
+                                }
                                 if (vallen > 0) {
-                                    my_read_all(cfd, val, vallen);
+                                    if (my_read_all(cfd, val, vallen) != (long)vallen) {
+                                        my_syscall1(6 /* __NR_close */, cfd);
+                                        continue;
+                                    }
                                 }
                                 val[vallen] = '\0';
                                 int set_rc = prop_area_set(prop_area, name, val);
@@ -1136,6 +1180,9 @@ static int spawn_service_manager(const char *name, const char *cmd, char *const 
         return (int)rc;
     }
     if (rc == 0) {
+        for (int fd = 3; fd < 1024; fd++) {
+            my_syscall1(6 /* __NR_close */, fd);
+        }
         long child_rc;
 
         child_rc = my_syscall2(206 /* __NR_setgroups32 */, 1, (long)&readproc_gid);
@@ -1806,9 +1853,26 @@ static int spawn_logd(void) {
         my_syscall2(63 /* __NR_dup2 */, fd_logd, 3);
         my_syscall2(63 /* __NR_dup2 */, fd_logdr, 4);
         my_syscall2(63 /* __NR_dup2 */, fd_logdw, 5);
-        if (fd_logd > 5) my_syscall1(6, fd_logd);
-        if (fd_logdr > 5) my_syscall1(6, fd_logdr);
-        if (fd_logdw > 5) my_syscall1(6, fd_logdw);
+
+        static const char str_dev_null[] = "/dev/null";
+        long null_fd = my_syscall3(5 /* __NR_open */, (long)str_dev_null, 2 /* O_RDWR */, 0);
+        if (null_fd < 0) {
+            my_syscall3(14 /* __NR_mknod */, (long)str_dev_null, 0020666 /* S_IFCHR | 0666 */, (1 << 8) | 3);
+            my_syscall2(15 /* __NR_chmod */, (long)str_dev_null, 0666);
+            null_fd = my_syscall3(5 /* __NR_open */, (long)str_dev_null, 2 /* O_RDWR */, 0);
+        }
+        if (null_fd >= 0) {
+            my_syscall2(63 /* __NR_dup2 */, null_fd, 0);
+            my_syscall2(63 /* __NR_dup2 */, null_fd, 1);
+            my_syscall2(63 /* __NR_dup2 */, null_fd, 2);
+            if (null_fd > 2 && null_fd != 3 && null_fd != 4 && null_fd != 5) {
+                my_syscall1(6 /* __NR_close */, null_fd);
+            }
+        }
+
+        for (int fd = 6; fd < 1024; fd++) {
+            my_syscall1(6 /* __NR_close */, fd);
+        }
 
         /* Set real/effective/saved GID and UID to AID_LOGD (1036) so logd's setuid/setgid calls succeed */
         my_syscall3(210 /* __NR_setresgid32 */, 1036, 1036, 1036);
@@ -1865,9 +1929,9 @@ static int spawn_tombstoned(void) {
         my_syscall2(63 /* __NR_dup2 */, fd_crash, 3);
         my_syscall2(63 /* __NR_dup2 */, fd_inter, 4);
         my_syscall2(63 /* __NR_dup2 */, fd_trace, 5);
-        if (fd_crash > 5) my_syscall1(6, fd_crash);
-        if (fd_inter > 5) my_syscall1(6, fd_inter);
-        if (fd_trace > 5) my_syscall1(6, fd_trace);
+        for (int fd = 6; fd < 1024; fd++) {
+            my_syscall1(6 /* __NR_close */, fd);
+        }
 
         /* Set real/effective/saved GID to system (1000) and UID to AID_TOMBSTONED (1037) */
         my_syscall3(210 /* __NR_setresgid32 */, 1000, 1000, 1000);
@@ -1959,6 +2023,25 @@ static int spawn_zygote(void) {
     }
 
     if (pid == 0) {
+        static const char str_dev_null[] = "/dev/null";
+        long null_fd = my_syscall3(5 /* __NR_open */, (long)str_dev_null, 2 /* O_RDWR */, 0);
+        if (null_fd < 0) {
+            my_syscall3(14 /* __NR_mknod */, (long)str_dev_null, 0020666 /* S_IFCHR | 0666 */, (1 << 8) | 3);
+            my_syscall2(15 /* __NR_chmod */, (long)str_dev_null, 0666);
+            null_fd = my_syscall3(5 /* __NR_open */, (long)str_dev_null, 2 /* O_RDWR */, 0);
+        }
+        if (null_fd >= 0) {
+            my_syscall2(63 /* __NR_dup2 */, null_fd, 0);
+            my_syscall2(63 /* __NR_dup2 */, null_fd, 1);
+            my_syscall2(63 /* __NR_dup2 */, null_fd, 2);
+            if (null_fd > 2) {
+                my_syscall1(6 /* __NR_close */, null_fd);
+            }
+        }
+        for (int fd = 4; fd < 1024; fd++) {
+            my_syscall1(6 /* __NR_close */, fd);
+        }
+
         static const char str_app_process[]  = "/system/bin/app_process";
         static const char str_xzygote[]      = "-Xzygote";
         static const char str_system_bin[]   = "/system/bin";
@@ -2012,6 +2095,9 @@ static int spawn_installd(void) {
     }
 
     if (pid == 0) {
+        for (int fd = 3; fd < 1024; fd++) {
+            my_syscall1(6 /* __NR_close */, fd);
+        }
         static const char str_installd[] = "/system/bin/installd";
         char *const inst_argv[] = {(char *)str_installd, 0};
         static const char *const inst_envp[] = {
@@ -2240,6 +2326,9 @@ void _start(void) {
         my_syscall2(63 /* __NR_dup2 */, tty, 0);
         my_syscall2(63 /* __NR_dup2 */, tty, 1);
         my_syscall2(63 /* __NR_dup2 */, tty, 2);
+        if (tty > 2) {
+            my_syscall1(6 /* __NR_close */, tty);
+        }
     }
 
     my_syscall3(4 /* __NR_write */, 1, (long)banner, sizeof(banner) - 1);
@@ -2343,10 +2432,32 @@ void _start(void) {
     /* 8. Prepare directory hierarchies */
     static const char str_xbin_su[] = "/xbin/su";
     my_syscall2(39 /* __NR_mkdir */, (long)str_xbin_path, 0755);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_su_path, 0, 0);
-    my_syscall2(15 /* __NR_chmod */, (long)str_su_path, 06755);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_xbin_su, 0, 0);
-    my_syscall2(15 /* __NR_chmod */, (long)str_xbin_su, 06755);
+    long r_chown = my_syscall3(212 /* __NR_chown32 */, (long)str_su_path, 0, 0 /* root:root */);
+    if (r_chown == 0) {
+        long r_chmod = my_syscall2(15 /* __NR_chmod */, (long)str_su_path, 06755);
+        if (r_chmod != 0) {
+            print_str("[-] FAILED: chmod /system/xbin/su, rc=");
+            print_dec(r_chmod);
+            print_str("\n");
+        }
+    } else if (r_chown != -2 /* -ENOENT */) {
+        print_str("[-] FAILED: chown /system/xbin/su, rc=");
+        print_dec(r_chown);
+        print_str("\n");
+    }
+    r_chown = my_syscall3(212 /* __NR_chown32 */, (long)str_xbin_su, 0, 0 /* root:root */);
+    if (r_chown == 0) {
+        long r_chmod = my_syscall2(15 /* __NR_chmod */, (long)str_xbin_su, 06755);
+        if (r_chmod != 0) {
+            print_str("[-] FAILED: chmod /xbin/su, rc=");
+            print_dec(r_chmod);
+            print_str("\n");
+        }
+    } else if (r_chown != -2 /* -ENOENT */) {
+        print_str("[-] FAILED: chown /xbin/su, rc=");
+        print_dec(r_chown);
+        print_str("\n");
+    }
 
     my_syscall2(39 /* __NR_mkdir */, (long)str_misc_path, 0771);
     my_syscall2(39 /* __NR_mkdir */, (long)str_adb_path, 0770);
@@ -2407,10 +2518,12 @@ void _start(void) {
     }
 
     if (is_android_mode()) {
-        print_str("[+] Boot mode: Android Userspace (disabling diagnostic dashboard and fb_test)\n");
+        print_str("[+] Boot mode: Android Userspace (rendering boot splash display)\n");
+        paint_tcl_tv_display();
         prepare_android_runtime_dirs();
 
-        /* Spawn tombstoned early so crash reporting works */
+        /* Spawn logd and tombstoned early so logging and crash reporting work */
+        spawn_logd();
         spawn_tombstoned();
 
         /* Spawn Graphics HALs */

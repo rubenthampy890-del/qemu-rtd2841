@@ -123,36 +123,36 @@ void main_su(long *sp) {
     int argc = (int)sp[0];
     char **argv = (char **)&sp[1];
 
-    /* Elevate credentials to root with checked returns per Doctrine I */
+    /*
+     * Elevate credentials to root with checked returns per Doctrine I.
+     * Note: If caller lacks CAP_SETGID in bounding set (e.g. adbd under SECURE_NOROOT)
+     * and binary is SUID-only without SGID, setresgid32/setgroups32 return -EPERM (-1).
+     * We require setresuid32 to succeed (rc == 0). For gid/groups, -EPERM is handled as
+     * an unprivileged group boundary while retaining full root UID 0 capabilities.
+     */
     int rc;
+    rc = sys_setresgid(0, 0, 0);
+    if (rc != 0 && rc != -1) {
+        print_err("[-] FAILED: setresgid32 failed, rc=");
+        print_dec_err(rc);
+        print_err("\n");
+        sys_exit(1);
+    }
+
+    rc = sys_setgroups(0, (const unsigned int *)0);
+    if (rc != 0 && rc != -1) {
+        print_err("[-] FAILED: setgroups32 failed, rc=");
+        print_dec_err(rc);
+        print_err("\n");
+        sys_exit(1);
+    }
+
     rc = sys_setresuid(0, 0, 0);
     if (rc != 0) {
         print_err("[-] FAILED: setresuid32 failed, rc=");
         print_dec_err(rc);
         print_err("\n");
         sys_exit(1);
-    }
-
-    rc = sys_setresgid(0, 0, 0);
-    if (rc != 0 && rc != -1) {
-        /*
-         * Recovery path: Caller lacks CAP_SETGID in bounding set (e.g. adbd under SECURE_NOROOT)
-         * or binary is SUID-only without SGID. When rc is -1 (-EPERM), do not emit error banner.
-         */
-        print_err("[-] FAILED: setresgid32 failed, rc=");
-        print_dec_err(rc);
-        print_err("\n");
-    }
-
-    rc = sys_setgroups(0, (const unsigned int *)0);
-    if (rc != 0 && rc != -1) {
-        /*
-         * Recovery path: Clearing supplementary groups requires CAP_SETGID.
-         * When caller lacks CAP_SETGID (-EPERM / rc=-1), do not pollute stderr.
-         */
-        print_err("[-] FAILED: setgroups32 failed, rc=");
-        print_dec_err(rc);
-        print_err("\n");
     }
 
     char *const envp[] = {

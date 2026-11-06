@@ -310,7 +310,11 @@ static uint64_t rtd2841_eth_read(void *opaque, hwaddr addr, unsigned size)
         val = 0;
         break;
     case 0x3C: /* IntrMask */
-        val = s->intr_mask;
+        if (size >= 4) {
+            val = (uint32_t)s->intr_mask | ((uint32_t)s->intr_status << 16);
+        } else {
+            val = s->intr_mask;
+        }
         break;
     case 0x3E: /* IntrStatus */
         val = s->intr_status;
@@ -433,6 +437,9 @@ static void rtd2841_eth_write(void *opaque, hwaddr addr, uint64_t val,
         break;
     case 0x3C: /* IntrMask */
         s->intr_mask = (uint16_t)val;
+        if (size >= 4) {
+            s->intr_status &= ~((uint16_t)(val >> 16));
+        }
         rtd2841_eth_update_irq(s);
         if (s->nic) {
             qemu_flush_queued_packets(qemu_get_queue(s->nic));
@@ -1009,22 +1016,18 @@ static void rtd2841_kbd_event(DeviceState *dev, QemuConsole *src,
     case Q_KEY_CODE_9: c = '9'; ir_scancode = 0xC6; break;
     case Q_KEY_CODE_0: c = '0'; ir_scancode = 0xCF; break;
     case Q_KEY_CODE_LEFT:
-    case Q_KEY_CODE_H:
         seq = "\033[D";
         ir_scancode = 0xA9;
         break;
     case Q_KEY_CODE_RIGHT:
-    case Q_KEY_CODE_L:
         seq = "\033[C";
         ir_scancode = 0xA8;
         break;
     case Q_KEY_CODE_UP:
-    case Q_KEY_CODE_K:
         seq = "\033[A";
         ir_scancode = 0xA6;
         break;
     case Q_KEY_CODE_DOWN:
-    case Q_KEY_CODE_J:
         seq = "\033[B";
         ir_scancode = 0xA7;
         break;
@@ -1033,12 +1036,59 @@ static void rtd2841_kbd_event(DeviceState *dev, QemuConsole *src,
         c = '\r';
         ir_scancode = 0x0B;
         break;
+    case Q_KEY_CODE_A: c = 'a'; break;
     case Q_KEY_CODE_B: c = 'b'; break;
-    case Q_KEY_CODE_T: c = 't'; break;
     case Q_KEY_CODE_C: c = 'c'; break;
-    case Q_KEY_CODE_Q: c = 'q'; break;
+    case Q_KEY_CODE_D: c = 'd'; break;
+    case Q_KEY_CODE_E: c = 'e'; break;
+    case Q_KEY_CODE_F: c = 'f'; break;
+    case Q_KEY_CODE_G: c = 'g'; break;
+    case Q_KEY_CODE_H: c = 'h'; break;
+    case Q_KEY_CODE_I: c = 'i'; break;
+    case Q_KEY_CODE_J: c = 'j'; break;
+    case Q_KEY_CODE_K: c = 'k'; break;
+    case Q_KEY_CODE_L: c = 'l'; break;
     case Q_KEY_CODE_M: c = 'm'; ir_scancode = 0xC0; break;
+    case Q_KEY_CODE_N: c = 'n'; break;
+    case Q_KEY_CODE_O: c = 'o'; break;
     case Q_KEY_CODE_P: c = 'p'; ir_scancode = 0xD5; break;
+    case Q_KEY_CODE_Q: c = 'q'; break;
+    case Q_KEY_CODE_R: c = 'r'; break;
+    case Q_KEY_CODE_S: c = 's'; break;
+    case Q_KEY_CODE_T: c = 't'; break;
+    case Q_KEY_CODE_U: c = 'u'; break;
+    case Q_KEY_CODE_V: c = 'v'; break;
+    case Q_KEY_CODE_W: c = 'w'; break;
+    case Q_KEY_CODE_X: c = 'x'; break;
+    case Q_KEY_CODE_Y: c = 'y'; break;
+    case Q_KEY_CODE_Z: c = 'z'; break;
+    case Q_KEY_CODE_SPC: c = ' '; break;
+    case Q_KEY_CODE_MINUS: c = '-'; break;
+    case Q_KEY_CODE_EQUAL: c = '='; break;
+    case Q_KEY_CODE_SLASH: c = '/'; break;
+    case Q_KEY_CODE_BACKSLASH: c = '\\'; break;
+    case Q_KEY_CODE_COMMA: c = ','; break;
+    case Q_KEY_CODE_DOT: c = '.'; break;
+    case Q_KEY_CODE_SEMICOLON: c = ';'; break;
+    case Q_KEY_CODE_APOSTROPHE: c = '\''; break;
+    case Q_KEY_CODE_GRAVE_ACCENT: c = '`'; break;
+    case Q_KEY_CODE_BRACKET_LEFT: c = '['; break;
+    case Q_KEY_CODE_BRACKET_RIGHT: c = ']'; break;
+    case Q_KEY_CODE_KP_0: c = '0'; break;
+    case Q_KEY_CODE_KP_1: c = '1'; break;
+    case Q_KEY_CODE_KP_2: c = '2'; break;
+    case Q_KEY_CODE_KP_3: c = '3'; break;
+    case Q_KEY_CODE_KP_4: c = '4'; break;
+    case Q_KEY_CODE_KP_5: c = '5'; break;
+    case Q_KEY_CODE_KP_6: c = '6'; break;
+    case Q_KEY_CODE_KP_7: c = '7'; break;
+    case Q_KEY_CODE_KP_8: c = '8'; break;
+    case Q_KEY_CODE_KP_9: c = '9'; break;
+    case Q_KEY_CODE_KP_DIVIDE: c = '/'; break;
+    case Q_KEY_CODE_KP_MULTIPLY: c = '*'; break;
+    case Q_KEY_CODE_KP_SUBTRACT: c = '-'; break;
+    case Q_KEY_CODE_KP_ADD: c = '+'; break;
+    case Q_KEY_CODE_KP_DECIMAL: c = '.'; break;
     case Q_KEY_CODE_VOLUMEUP:
     case Q_KEY_CODE_F10:
         ir_scancode = 0xD0;
@@ -1054,10 +1104,14 @@ static void rtd2841_kbd_event(DeviceState *dev, QemuConsole *src,
         ir_scancode = 0xF7;
         break;
     case Q_KEY_CODE_MENU:
+        ir_scancode = 0x13;
+        break;
     case Q_KEY_CODE_TAB:
+        c = '\t';
         ir_scancode = 0x13;
         break;
     case Q_KEY_CODE_ESC:
+        c = 0x1b;
         ir_scancode = 0xD8;
         break;
     case Q_KEY_CODE_POWER:

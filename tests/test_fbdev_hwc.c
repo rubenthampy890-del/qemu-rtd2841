@@ -362,6 +362,7 @@ void _start(void) {
 
     /* 5. Memory Readback & Bitwise Verification */
     print_s("[*] Executing pixel readback bitwise verification...\n");
+    unsigned long non_zero_count = 0;
     for (unsigned int y = 0; y < 1080; y++) {
         unsigned int row_start = y * 1920;
         for (unsigned int x = 0; x < 1920; x++) {
@@ -381,9 +382,15 @@ void _start(void) {
                 sys_close(fd);
                 sys_exit(20);
             }
+            if (actual != 0) {
+                non_zero_count += 4;
+            }
         }
     }
     print_s("[+] Readback verified: all 2,073,600 pixels match bitwise ground truth.\n");
+    print_s("[+] Non-zero framebuffer bytes: ");
+    print_d((long)non_zero_count);
+    print_s("\n");
 
     /* 6. Clean Unmap & Close with Explicit Checked Returns */
     long rc_unmap = sys_munmap(fb_ptr, frame_bytes);

@@ -264,11 +264,14 @@ static void rtd2841_timer_write(void *opaque, hwaddr addr, uint64_t val,
                     uint64_t limit = ptimer_get_limit(t);
                     uint64_t count = ptimer_get_count(t);
                     uint32_t cur = (uint32_t)(limit - count);
-                    uint32_t next = (uint32_t)(val - cur);
+                    uint32_t val32 = (uint32_t)val;
+                    uint32_t next;
                     uint64_t new_limit;
 
-                    if (next == 0) {
+                    if ((int32_t)(val32 - cur) <= 0) {
                         next = 1;
+                    } else {
+                        next = val32 - cur;
                     }
                     new_limit = (uint64_t)cur + next;
 
@@ -298,10 +301,12 @@ static void rtd2841_timer_write(void *opaque, hwaddr addr, uint64_t val,
         t = s->timer[id];
         ptimer_transaction_begin(t);
         if (rtd2841_running(s, id) && !(s->cr[id] & R_CR_PERIOD) && s->oneshot_pending[id]) {
-            uint32_t next = (uint32_t)(s->tvr[id] - v);
+            uint32_t next;
             uint64_t new_limit;
-            if (next == 0) {
+            if ((int32_t)(s->tvr[id] - v) <= 0) {
                 next = 1;
+            } else {
+                next = s->tvr[id] - v;
             }
             new_limit = (uint64_t)v + next;
             ptimer_set_limit(t, new_limit, 0);

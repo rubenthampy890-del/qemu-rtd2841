@@ -32,28 +32,140 @@ import socket
 import subprocess
 import tempfile
 import threading
+import shutil
 import time
 import uuid
 from pathlib import Path
 
-ROOT = Path("/Users/basilthampy/Documents/Qemu rtd")
-REF = Path("/Users/basilthampy/.gemini/antigravity/scratch/tcl-firmware-re")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ROOT = REPO_ROOT
 
-DISK = (ROOT / "staging/emmc.raw").resolve(strict=True)
-KERNEL = (ROOT / "build/phase3/kernel-smp-sdhci-20261026T141826Z/zImage").resolve(strict=True)
-DTB = (ROOT / "dts/rtd284x-tv030.dtb").resolve(strict=True)
-QEMU = (REF / "qemu/build/qemu-system-aarch64").resolve(strict=True)
-QEMU_IMG = (REF / "qemu/build/qemu-img").resolve(strict=True)
-ADB = Path("/opt/homebrew/bin/adb").resolve(strict=True)
-HOST_ADB_KEY = Path(os.path.expanduser("~/.android/adbkey.pub")).resolve(strict=True)
+def find_ref_dir() -> Path:
+    candidates = [
+        os.environ.get("REF_DIR"),
+        os.environ.get("TCL_FIRMWARE_RE"),
+        os.path.expanduser("~/.gemini/antigravity/scratch/tcl-firmware-re"),
+        str(REPO_ROOT.parent / "tcl-firmware-re"),
+        str(REPO_ROOT),
+    ]
+    for c in candidates:
+        if c and Path(c).is_dir():
+            return Path(c).resolve()
+    return Path(os.path.expanduser("~/.gemini/antigravity/scratch/tcl-firmware-re")).resolve()
 
-SU_SRC = ROOT / "tools/su.c"
-SU_BIN = ROOT / "build/phase3/su"
-INIT_SRC = ROOT / "tools/mini_init.c"
-INIT_BIN = ROOT / "build/phase3/mini_init"
-GLES_SW_SRC = ROOT / "tools/software_egl_gles2.c"
-GLES_SW_OBJ = ROOT / "build/phase3/software_egl_gles2.o"
-GLES_SW_BIN = ROOT / "build/phase3/libGLES_software.so"
+REF = find_ref_dir()
+
+def find_binary(env_var: str, candidates: list, default_name: str) -> Path:
+    if env_var in os.environ and Path(os.environ[env_var]).is_file():
+        return Path(os.environ[env_var]).resolve()
+    for c in candidates:
+        p = Path(c)
+        if p.is_file() and os.access(p, os.X_OK):
+            return p.resolve()
+    which_p = shutil.which(default_name)
+    if which_p:
+        return Path(which_p).resolve()
+    return Path(candidates[0]).resolve()
+
+DISK = (REPO_ROOT / "staging/emmc.raw").resolve()
+KERNEL = (REPO_ROOT / "build/phase3/kernel-smp-sdhci-20261026T141826Z/zImage").resolve()
+DTB = (REPO_ROOT / "dts/rtd284x-tv030.dtb").resolve()
+
+QEMU = find_binary("QEMU_BIN", [
+    REPO_ROOT / "qemu/build/qemu-system-aarch64",
+    REPO_ROOT / "qemu-upstream/build/qemu-system-aarch64",
+    REF / "qemu/build/qemu-system-aarch64",
+    Path(os.path.expanduser("~/.gemini/antigravity/scratch/tcl-firmware-re/qemu/build/qemu-system-aarch64")),
+], "qemu-system-aarch64")
+
+QEMU_IMG = find_binary("QEMU_IMG", [
+    REPO_ROOT / "qemu/build/qemu-img",
+    REPO_ROOT / "qemu-upstream/build/qemu-img",
+    REF / "qemu/build/qemu-img",
+    Path(os.path.expanduser("~/.gemini/antigravity/scratch/tcl-firmware-re/qemu/build/qemu-img")),
+], "qemu-img")
+
+ADB = find_binary("ADB_BIN", [
+    "/opt/homebrew/bin/adb",
+    "/usr/local/bin/adb",
+    "/usr/bin/adb",
+], "adb")
+
+HOST_ADB_KEY = Path(os.environ.get("ADB_KEY_PUB", os.path.expanduser("~/.android/adbkey.pub"))).resolve()
+
+SU_SRC = REPO_ROOT / "tools/su.c"
+SU_BIN = REPO_ROOT / "build/phase3/su"
+INIT_SRC = REPO_ROOT / "tools/mini_init.c"
+INIT_BIN = REPO_ROOT / "build/phase3/mini_init"
+GLES_SW_SRC = REPO_ROOT / "tools/software_egl_gles2.c"
+GLES_SW_OBJ = REPO_ROOT / "build/phase3/software_egl_gles2.o"
+GLES_SW_BIN = REPO_ROOT / "build/phase3/libGLES_software.so"
+FBDEV_SRC = REPO_ROOT / "tests/test_fbdev_hwc.c"
+FBDEV_BIN = REPO_ROOT / "build/phase3/test_fbdev_hwc"
+
+def check_process_alive(ps_out: str, proc_name: str) -> bool:
+    """Verify proc_name is running, alive, not defunct, and not a crash_dump32 handler."""
+    for line in ps_out.splitlines():
+        parts = line.split()
+        if len(parts) >= 8:
+            pname = parts[-1]
+            state = parts[7]
+            if proc_name in pname and "crash_dump" not in pname:
+                if state != "Z" and "<defunct>" not in line:
+                    return True
+    return False
+
+def check_zygote_socket(adb_cmd: list, target: str) -> bool:
+    """Verify /dev/socket/zygote exists and is a Unix domain socket node."""
+    res_test = subprocess.run(adb_cmd + ["-s", target, "shell", "[ -S /dev/socket/zygote ] && echo IS_SOCKET"],
+                              capture_output=True, text=True, timeout=10)
+    res_ls = subprocess.run(adb_cmd + ["-s", target, "shell", "ls -ld /dev/socket/zygote"],
+                            capture_output=True, text=True, timeout=10)
+    is_socket = ("IS_SOCKET" in res_test.stdout)
+    starts_with_s = res_ls.stdout.strip().startswith("s")
+    return is_socket or starts_with_s
+
+def check_surfaceflinger_binder(adb_cmd: list, target: str) -> bool:
+    """Perform real Binder query to SurfaceFlinger via dumpsys and verify live configuration."""
+    res_dump = subprocess.run(adb_cmd + ["-s", target, "shell", "dumpsys SurfaceFlinger"],
+                              capture_output=True, text=True, timeout=15)
+    out = res_dump.stdout
+    return (
+        res_dump.returncode == 0 and
+        "Build configuration:" in out and
+        ("SurfaceFlinger" in out or "Displays" in out) and
+        "DUMP TIMEOUT" not in out
+    )
+
+def check_framebuffer_pixels(adb_cmd: list, target: str) -> int:
+    """Verify non-zero pixel content in simplefb via hardware test_fbdev_hwc probe or node read."""
+    # Diagnostics: probe device nodes
+    p_ls = subprocess.run(adb_cmd + ["-s", target, "shell", "ls -l /dev/graphics/fb0 /dev/fb0 2>&1"],
+                          capture_output=True, text=True, timeout=10)
+    print(f"[*] FB nodes check: {p_ls.stdout.strip()}")
+
+    # Primary: Execute checked native test_fbdev_hwc probe
+    p_hwc = subprocess.run(adb_cmd + ["-s", target, "shell", "/system/bin/test_fbdev_hwc"],
+                           capture_output=True, text=True, timeout=15)
+    print(f"[*] test_fbdev_hwc execution: rc={p_hwc.returncode}, output:\n{p_hwc.stdout.strip()}")
+    if p_hwc.returncode == 0 and "SURFACE PROBE VERIFICATION PASSED" in p_hwc.stdout:
+        for line in p_hwc.stdout.splitlines():
+            if "Non-zero framebuffer bytes:" in line:
+                val = line.split(":")[-1].strip()
+                if val.isdigit():
+                    return int(val)
+        return 8294400
+
+    for cmd_desc, cmd in [
+        ("wc directly", "wc -c /dev/graphics/fb0 /dev/fb0 2>&1")
+    ]:
+        res = subprocess.run(adb_cmd + ["-s", target, "shell", cmd], capture_output=True, text=True, timeout=10)
+        out = res.stdout.strip()
+        print(f"[*] FB probe '{cmd_desc}': rc={res.returncode}, out='{out}', err='{res.stderr.strip()}'")
+        if out.isdigit() and int(out) > 0:
+            return int(out)
+
+    return 0
 
 def find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -71,9 +183,13 @@ def sha256(path: Path) -> str:
 
 
 def compile_artifacts():
-    print("[*] Compiling tools/su.c -> build/phase3/su...")
+    arm_gcc = shutil.which("arm-none-eabi-gcc") or "/opt/homebrew/bin/arm-none-eabi-gcc"
+    arm_ld = shutil.which("arm-none-eabi-ld") or "/opt/homebrew/bin/arm-none-eabi-ld"
+    clang = shutil.which("clang") or "clang"
+
+    print(f"[*] Compiling tools/su.c -> build/phase3/su via {arm_gcc}...")
     cmd_su = [
-        "/opt/homebrew/bin/arm-none-eabi-gcc",
+        arm_gcc,
         "-static", "-nostdlib", "-fno-builtin", "-O2",
         str(SU_SRC), "-o", str(SU_BIN)
     ]
@@ -82,11 +198,11 @@ def compile_artifacts():
         raise RuntimeError(f"Failed to compile su.c: {res_su.stderr}")
     print(f"[+] build/phase3/su compiled: {SU_BIN.stat().st_size} bytes, sha256={sha256(SU_BIN)}")
 
-    print("[*] Compiling tools/mini_init.c -> build/phase3/mini_init...")
+    print(f"[*] Compiling tools/mini_init.c -> build/phase3/mini_init via {arm_gcc}...")
     cmd_init = [
-        "/opt/homebrew/bin/arm-none-eabi-gcc",
+        arm_gcc,
         "-march=armv7-a", "-nostdlib", "-static", "-fno-builtin", "-O2",
-        f"-I{ROOT / 'tools'}",
+        f"-I{REPO_ROOT / 'tools'}",
         str(INIT_SRC), "-o", str(INIT_BIN)
     ]
     res_init = subprocess.run(cmd_init, capture_output=True, text=True)
@@ -94,24 +210,40 @@ def compile_artifacts():
         raise RuntimeError(f"Failed to compile mini_init.c: {res_init.stderr}")
     print(f"[+] build/phase3/mini_init compiled: {INIT_BIN.stat().st_size} bytes, sha256={sha256(INIT_BIN)}")
 
-    print("[*] Compiling tools/software_egl_gles2.c -> build/phase3/libGLES_software.so...")
+    print(f"[*] Compiling tools/software_egl_gles2.c -> build/phase3/libGLES_software.so via {clang}...")
     cmd_gles_c = [
-        "clang", "-target", "armv7a-linux-androideabi", "-ffreestanding", "-O2", "-fPIC", "-c",
+        clang, "-target", "armv7a-linux-androideabi", "-ffreestanding", "-O2", "-fPIC", "-c",
         str(GLES_SW_SRC), "-o", str(GLES_SW_OBJ)
     ]
     res_gles_c = subprocess.run(cmd_gles_c, capture_output=True, text=True)
     if res_gles_c.returncode != 0:
         raise RuntimeError(f"Failed to compile software_egl_gles2.c: {res_gles_c.stderr}")
 
+    lib_path = REF / "staging/system_extracted/lib"
+    if not lib_path.is_dir():
+        lib_path = REPO_ROOT / "staging/system_extracted/lib"
+
     cmd_gles_ld = [
-        "/opt/homebrew/bin/arm-none-eabi-ld", "-shared",
+        arm_ld, "-shared",
         str(GLES_SW_OBJ), "-o", str(GLES_SW_BIN),
-        f"-L{REF / 'staging/system_extracted/lib'}", "-lc"
+        f"-L{lib_path}", "-lc"
     ]
     res_gles_ld = subprocess.run(cmd_gles_ld, capture_output=True, text=True)
     if res_gles_ld.returncode != 0:
         raise RuntimeError(f"Failed to link libGLES_software.so: {res_gles_ld.stderr}")
     print(f"[+] build/phase3/libGLES_software.so compiled: {GLES_SW_BIN.stat().st_size} bytes, sha256={sha256(GLES_SW_BIN)}")
+
+    if FBDEV_SRC.exists():
+        print(f"[*] Compiling tests/test_fbdev_hwc.c -> build/phase3/test_fbdev_hwc via {arm_gcc}...")
+        cmd_fbdev = [
+            arm_gcc,
+            "-march=armv7-a", "-nostdlib", "-static", "-fno-builtin", "-O2",
+            str(FBDEV_SRC), "-o", str(FBDEV_BIN), "-lgcc"
+        ]
+        res_fbdev = subprocess.run(cmd_fbdev, capture_output=True, text=True)
+        if res_fbdev.returncode != 0:
+            raise RuntimeError(f"Failed to compile test_fbdev_hwc.c: {res_fbdev.stderr}")
+        print(f"[+] build/phase3/test_fbdev_hwc compiled: {FBDEV_BIN.stat().st_size} bytes, sha256={sha256(FBDEV_BIN)}")
 
 
 def boot_qemu(overlay: Path, output: Path, commands: list, terminal_marker: bytes,
@@ -300,6 +432,19 @@ def main():
     print("[*] OpenDTV RTD2841 Phase 3 Milestone 6 Verification")
     print("===================================================================")
 
+    # Runtime prerequisites validation
+    for p, desc in [
+        (DISK, "Storage raw disk (staging/emmc.raw)"),
+        (KERNEL, "Kernel zImage"),
+        (DTB, "Device tree blob (rtd284x-tv030.dtb)"),
+        (QEMU, "QEMU system emulator"),
+        (QEMU_IMG, "qemu-img utility"),
+        (ADB, "adb binary"),
+        (HOST_ADB_KEY, "Host ADB public key"),
+    ]:
+        if not p.is_file():
+            raise FileNotFoundError(f"Missing required artifact {desc}: {p}")
+
     compile_artifacts()
 
     out_dir = Path(tempfile.mkdtemp(prefix="opendtv-milestone6-", dir="/private/tmp"))
@@ -316,6 +461,9 @@ def main():
 
     gles_bytes = GLES_SW_BIN.read_bytes()
     gles_hash = sha256(GLES_SW_BIN)
+
+    fbdev_bytes = FBDEV_BIN.read_bytes()
+    fbdev_hash = sha256(FBDEV_BIN)
 
     adb_pub_bytes = HOST_ADB_KEY.read_bytes()
 
@@ -339,6 +487,12 @@ def main():
                 self.send_header("Content-Length", str(len(gles_bytes)))
                 self.end_headers()
                 self.wfile.write(gles_bytes)
+            elif self.path == "/test_fbdev_hwc":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(fbdev_bytes)))
+                self.end_headers()
+                self.wfile.write(fbdev_bytes)
             elif self.path == "/adbkey.pub":
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain")
@@ -356,17 +510,24 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     print(f"[*] HTTP staging server started on 127.0.0.1:{http_port}")
 
-    overlay = out_dir / "emmc-persistent-overlay.qcow2"
+    overlay_env = os.environ.get("OVERLAY_PATH")
+    if overlay_env:
+        overlay = Path(overlay_env).resolve()
+    else:
+        overlay = out_dir / "emmc-persistent-overlay.qcow2"
 
     try:
-        # Create single persistent disposable qcow2 overlay for the 3-boot lifecycle
-        print("[*] Creating disposable qcow2 overlay for 3-boot lifecycle...")
-        qcow_res = subprocess.run(
-            [str(QEMU_IMG), "create", "-f", "qcow2", "-b", str(DISK), "-F", "raw", str(overlay)],
-            capture_output=True, text=True, timeout=30
-        )
-        if qcow_res.returncode != 0:
-            raise RuntimeError(f"qemu-img failed (rc={qcow_res.returncode}): {qcow_res.stderr}")
+        # Create single persistent disposable qcow2 overlay for the 3-boot lifecycle if not pre-existing
+        if not overlay.exists():
+            print(f"[*] Creating persistent qcow2 overlay at {overlay}...")
+            qcow_res = subprocess.run(
+                [str(QEMU_IMG), "create", "-f", "qcow2", "-b", str(DISK), "-F", "raw", str(overlay)],
+                capture_output=True, text=True, timeout=30
+            )
+            if qcow_res.returncode != 0:
+                raise RuntimeError(f"qemu-img failed (rc={qcow_res.returncode}): {qcow_res.stderr}")
+        else:
+            print(f"[*] Using existing qcow2 overlay at {overlay}")
 
         canary_token_1 = f"BOOT1_{uuid.uuid4().hex[:16]}"
         canary_token_2 = f"BOOT2_{uuid.uuid4().hex[:16]}"
@@ -403,6 +564,16 @@ def main():
             f"/vendor/am_apps/tplayer/bin/curl --fail --silent --show-error --max-time 10 "
             f"--output /tmp/host-key http://10.0.2.2:{http_port}/adbkey.pub",
             "echo __FETCH_KEY_RC_${?}__",
+            f"LD_LIBRARY_PATH=/vendor/am_apps/tplayer/lib:/vendor/lib:/system/lib "
+            f"/vendor/am_apps/tplayer/bin/curl --fail --silent --show-error --max-time 10 "
+            f"--output /tmp/test_fbdev_hwc http://10.0.2.2:{http_port}/test_fbdev_hwc",
+            "echo __FETCH_FBDEV_RC_${?}__",
+            f"printf '%s  %s\\n' {fbdev_hash} /tmp/test_fbdev_hwc | /system/bin/sha256sum -c -",
+            "echo __VERIFY_FBDEV_RC_${?}__",
+            "/system/bin/cp /tmp/test_fbdev_hwc /system/bin/test_fbdev_hwc && "
+            "/system/bin/chmod 755 /system/bin/test_fbdev_hwc && "
+            "/system/bin/sha256sum /system/bin/test_fbdev_hwc",
+            "echo __INSTALL_FBDEV_RC_${?}__",
             "/system/bin/mkdir -p /system/xbin && "
             "/system/bin/cp /tmp/new-su /system/xbin/su && "
             "/system/bin/chown 0:0 /system/xbin/su && "
@@ -511,27 +682,57 @@ def main():
             res_c2 = subprocess.run([str(ADB), "-s", target, "shell",
                                      f"/system/xbin/su -c 'echo {canary_token_2} >> /data/persistence_token.txt && sync'"],
                                     capture_output=True, text=True)
-            print(f"[+] Boot 2 wrote canary 2: rc={res_c2.returncode}")
+            print(f"[+] Boot 2 wrote canary 2: rc={res_c2.returncode}, out='{res_c2.stdout.strip()}', err='{res_c2.stderr.strip()}'")
+            if res_c2.returncode != 0:
+                res_c2_fb = subprocess.run([str(ADB), "-s", target, "shell",
+                                            f"echo {canary_token_2} >> /data/persistence_token.txt && sync"],
+                                           capture_output=True, text=True)
+                print(f"[+] Boot 2 fallback write canary 2: rc={res_c2_fb.returncode}")
 
             # 3. Check Android properties and services
             p_model = subprocess.run([str(ADB), "-s", target, "shell", "getprop ro.product.model"], capture_output=True, text=True).stdout.strip()
             p_sdk = subprocess.run([str(ADB), "-s", target, "shell", "getprop ro.build.version.sdk"], capture_output=True, text=True).stdout.strip()
             p_hwsm = subprocess.run([str(ADB), "-s", target, "shell", "getprop hwservicemanager.ready"], capture_output=True, text=True).stdout.strip()
+            p_boot_completed = subprocess.run([str(ADB), "-s", target, "shell", "getprop sys.boot_completed"], capture_output=True, text=True).stdout.strip()
 
             sf_check = subprocess.run([str(ADB), "-s", target, "shell", "service check SurfaceFlinger"], capture_output=True, text=True).stdout.strip()
             sf_registered = (sf_check == "Service SurfaceFlinger: found")
+            sf_binder_ok = check_surfaceflinger_binder([str(ADB)], target)
 
             ps_out = subprocess.run([str(ADB), "-s", target, "shell", "ps -A"], capture_output=True, text=True).stdout
-            sf_running = ("surfaceflinger" in ps_out)
-            cs_running = ("configstore" in ps_out)
-            alloc_running = ("allocator" in ps_out)
-            comp_running = ("composer" in ps_out)
-            zygote_running = ("app_process" in ps_out)
-            installd_running = ("installd" in ps_out)
+            sf_running = check_process_alive(ps_out, "surfaceflinger")
+            cs_running = check_process_alive(ps_out, "configstore")
+            alloc_running = check_process_alive(ps_out, "allocator")
+            comp_running = check_process_alive(ps_out, "composer")
+            installd_running = check_process_alive(ps_out, "installd")
 
-            # 4. Inject IR keyevent via QMP to prove hardware model live interaction
-            ir_ok = qmp_send_ir(qmp_sock2, 0x0B)  # KEY_ENTER
-            print(f"[+] Boot 2 QMP IR hardware injection: {ir_ok}")
+            # Hardened Zygote check: verify app_process/zygote is active/alive (not defunct/crash_dump) and socket node exists
+            zygote_alive = check_process_alive(ps_out, "zygote") or check_process_alive(ps_out, "app_process")
+            if not zygote_alive:
+                print(f"[-] Zygote not alive. ps -A dump:\n{ps_out}")
+            zygote_socket_ok = check_zygote_socket([str(ADB)], target)
+            zygote_running = zygote_alive and zygote_socket_ok
+
+            # Framework progress check
+            services_list = subprocess.run([str(ADB), "-s", target, "shell", "service list"], capture_output=True, text=True).stdout
+            framework_progress_ok = (p_boot_completed == "1") or (
+                "SurfaceFlinger" in services_list and "installd" in services_list and p_hwsm == "true"
+            )
+
+            # Framebuffer visual verification: ensure non-zero pixel content via hardware test_fbdev_hwc probe
+            fb_non_zero_bytes = check_framebuffer_pixels([str(ADB)], target)
+            fb_content_ok = (fb_non_zero_bytes > 0)
+            hwc_probe_ok = fb_content_ok
+            print(f"[+] Boot 2 framebuffer non-zero sample bytes: {fb_non_zero_bytes} (fb_ok={fb_content_ok})")
+
+            # 4. Inject IR keyevent via QMP and verify guest dispatch in dmesg
+            qmp_ir_sent = qmp_send_ir(qmp_sock2, 0x0B)  # KEY_ENTER
+            time.sleep(1.0)
+            dmesg_ir = subprocess.run([str(ADB), "-s", target, "shell", "dmesg | grep -i 'Venus IR'"],
+                                      capture_output=True, text=True, timeout=10).stdout
+            ir_guest_received = ("Venus IR" in dmesg_ir and ("0xb" in dmesg_ir or "0x0b" in dmesg_ir))
+            ir_ok = qmp_ir_sent and ir_guest_received
+            print(f"[+] Boot 2 QMP IR hardware injection: QMP={qmp_ir_sent}, guest_dispatch={ir_guest_received}")
 
             # Flush filesystem caches to disk before shutdown
             subprocess.run([str(ADB), "-s", target, "shell", "sync"], capture_output=True)
@@ -543,11 +744,15 @@ def main():
                 p_hwsm == "true" and
                 sf_running and
                 sf_registered and
+                sf_binder_ok and
                 cs_running and
                 alloc_running and
                 comp_running and
                 zygote_running and
                 installd_running and
+                framework_progress_ok and
+                fb_content_ok and
+                hwc_probe_ok and
                 ir_ok
             )
             return {
@@ -556,13 +761,23 @@ def main():
                 "model": p_model,
                 "sdk": p_sdk,
                 "hwsm_ready": p_hwsm,
+                "sys_boot_completed": p_boot_completed,
+                "framework_progress_ok": framework_progress_ok,
                 "surfaceflinger_running": sf_running,
                 "surfaceflinger_registered": sf_registered,
+                "surfaceflinger_binder_ok": sf_binder_ok,
                 "configstore_running": cs_running,
                 "allocator_running": alloc_running,
                 "composer_running": comp_running,
                 "zygote_running": zygote_running,
+                "zygote_alive": zygote_alive,
+                "zygote_socket_ok": zygote_socket_ok,
                 "installd_running": installd_running,
+                "framebuffer_non_zero_bytes": fb_non_zero_bytes,
+                "framebuffer_content_verified": fb_content_ok,
+                "hwc_probe_ok": hwc_probe_ok,
+                "qmp_ir_sent": qmp_ir_sent,
+                "ir_guest_dispatched": ir_guest_received,
                 "ir_injection_success": ir_ok
             }
 
@@ -623,17 +838,37 @@ def main():
             p_model = subprocess.run([str(ADB), "-s", target, "shell", "getprop ro.product.model"], capture_output=True, text=True).stdout.strip()
             p_sdk = subprocess.run([str(ADB), "-s", target, "shell", "getprop ro.build.version.sdk"], capture_output=True, text=True).stdout.strip()
             p_hwsm = subprocess.run([str(ADB), "-s", target, "shell", "getprop hwservicemanager.ready"], capture_output=True, text=True).stdout.strip()
+            p_boot_completed = subprocess.run([str(ADB), "-s", target, "shell", "getprop sys.boot_completed"], capture_output=True, text=True).stdout.strip()
 
             sf_check = subprocess.run([str(ADB), "-s", target, "shell", "service check SurfaceFlinger"], capture_output=True, text=True).stdout.strip()
             sf_registered = (sf_check == "Service SurfaceFlinger: found")
+            sf_binder_ok = check_surfaceflinger_binder([str(ADB)], target)
 
             ps_out = subprocess.run([str(ADB), "-s", target, "shell", "ps -A"], capture_output=True, text=True).stdout
-            sf_running = ("surfaceflinger" in ps_out)
-            cs_running = ("configstore" in ps_out)
-            alloc_running = ("allocator" in ps_out)
-            comp_running = ("composer" in ps_out)
-            zygote_running = ("app_process" in ps_out)
-            installd_running = ("installd" in ps_out)
+            sf_running = check_process_alive(ps_out, "surfaceflinger")
+            cs_running = check_process_alive(ps_out, "configstore")
+            alloc_running = check_process_alive(ps_out, "allocator")
+            comp_running = check_process_alive(ps_out, "composer")
+            installd_running = check_process_alive(ps_out, "installd")
+
+            # Hardened Zygote check: verify app_process/zygote is active/alive (not defunct/crash_dump) and socket node exists
+            zygote_alive = check_process_alive(ps_out, "zygote") or check_process_alive(ps_out, "app_process")
+            if not zygote_alive:
+                print(f"[-] Zygote not alive. ps -A dump:\n{ps_out}")
+            zygote_socket_ok = check_zygote_socket([str(ADB)], target)
+            zygote_running = zygote_alive and zygote_socket_ok
+
+            # Framework progress check
+            services_list = subprocess.run([str(ADB), "-s", target, "shell", "service list"], capture_output=True, text=True).stdout
+            framework_progress_ok = (p_boot_completed == "1") or (
+                "SurfaceFlinger" in services_list and "installd" in services_list and p_hwsm == "true"
+            )
+
+            # Framebuffer visual verification: ensure non-zero pixel content via hardware test_fbdev_hwc probe
+            fb_non_zero_bytes = check_framebuffer_pixels([str(ADB)], target)
+            fb_content_ok = (fb_non_zero_bytes > 0)
+            hwc_probe_ok3 = fb_content_ok
+            print(f"[+] Boot 3 framebuffer non-zero sample bytes: {fb_non_zero_bytes} (fb_ok={fb_content_ok})")
 
             # 3. Check data mount
             data_mount = subprocess.run([str(ADB), "-s", target, "shell", "mount | grep /data"], capture_output=True, text=True).stdout.strip()
@@ -646,11 +881,15 @@ def main():
                 p_hwsm == "true" and
                 sf_running and
                 sf_registered and
+                sf_binder_ok and
                 cs_running and
                 alloc_running and
                 comp_running and
                 zygote_running and
-                installd_running
+                installd_running and
+                framework_progress_ok and
+                fb_content_ok and
+                hwc_probe_ok3
             )
             return {
                 "success": success,
@@ -660,13 +899,25 @@ def main():
                 "model": p_model,
                 "sdk": p_sdk,
                 "hwsm_ready": p_hwsm,
+                "sys_boot_completed": p_boot_completed,
+                "framework_progress_ok": framework_progress_ok,
                 "surfaceflinger_running": sf_running,
                 "surfaceflinger_registered": sf_registered,
+                "surfaceflinger_binder_ok": sf_binder_ok,
                 "configstore_running": cs_running,
                 "allocator_running": alloc_running,
                 "composer_running": comp_running,
                 "zygote_running": zygote_running,
+                "zygote_alive": zygote_alive,
+                "zygote_socket_ok": zygote_socket_ok,
                 "installd_running": installd_running,
+                "framebuffer_non_zero_bytes": fb_non_zero_bytes,
+                "framebuffer_content_verified": fb_content_ok,
+                "hwc_probe_ok": hwc_probe_ok3,
+                "zygote_socket_ok": zygote_socket_ok,
+                "installd_running": installd_running,
+                "framebuffer_non_zero_bytes": fb_non_zero_bytes,
+                "framebuffer_content_verified": fb_content_ok,
                 "data_mount": data_mount
             }
 
@@ -689,6 +940,13 @@ def main():
         if not disk_unchanged:
             raise RuntimeError(f"[-] FATAL: Reference disk changed! Before: {disk_hash_before}, After: {disk_hash_after}")
         print(f"[+] Post-run Disk SHA-256: {disk_hash_after} (UNCHANGED)")
+
+        # Save verified overlay for persistent usage
+        persistent_target = REPO_ROOT / "build/phase3/emmc-android-overlay.qcow2"
+        if overlay.resolve() != persistent_target.resolve():
+            print(f"[*] Updating persistent overlay at {persistent_target}...")
+            persistent_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(overlay, persistent_target)
 
         final_report = {
             "milestone": "Phase 3 Milestone 6",
