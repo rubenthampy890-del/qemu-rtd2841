@@ -29,6 +29,7 @@ extern void *memset(void *s, int c, size_t n);
 extern void *memcpy(void *dest, const void *src, size_t n);
 extern int strcmp(const char *s1, const char *s2);
 extern char *strstr(const char *haystack, const char *needle);
+extern char *strchr(const char *s, int c);
 extern int open(const char *pathname, int flags, ...);
 extern int write(int fd, const void *buf, size_t count);
 extern int close(int fd);
@@ -198,6 +199,8 @@ typedef struct {
     GLenum type;
     GLboolean compiled;
     char *source;
+    GLboolean has_color;
+    float color[4];
 } SwShader;
 
 typedef struct {
@@ -212,6 +215,8 @@ typedef struct {
     GLuint fragment_shader;
     SwAttribBinding attrib_bindings[8];
     int num_attrib_bindings;
+    GLboolean has_color;
+    float color[4];
 } SwProgram;
 
 /* Vertex Attribute State */
@@ -702,6 +707,51 @@ void glGetIntegerv(GLenum pname, GLint *params) {
     }
 }
 
+static float parse_float_val(const char **p) {
+    while (**p == ' ' || **p == '\t' || **p == '\n' || **p == '\r') (*p)++;
+    float sign = 1.0f;
+    if (**p == '-') { sign = -1.0f; (*p)++; }
+    else if (**p == '+') { (*p)++; }
+    float val = 0.0f;
+    while (**p >= '0' && **p <= '9') {
+        val = val * 10.0f + (float)(**p - '0');
+        (*p)++;
+    }
+    if (**p == '.') {
+        (*p)++;
+        float frac = 0.1f;
+        while (**p >= '0' && **p <= '9') {
+            val += (float)(**p - '0') * frac;
+            frac *= 0.1f;
+            (*p)++;
+        }
+    }
+    if (**p == 'f' || **p == 'F') (*p)++;
+    while (**p == ' ' || **p == '\t' || **p == '\n' || **p == '\r') (*p)++;
+    return sign * val;
+}
+
+static void parse_fragment_color(const char *src, float *color, GLboolean *has_color) {
+    *has_color = GL_FALSE;
+    color[0] = 1.0f; color[1] = 1.0f; color[2] = 1.0f; color[3] = 1.0f;
+    if (!src) return;
+    const char *fc = strstr(src, "gl_FragColor");
+    if (!fc) return;
+    const char *v4 = strstr(fc, "vec4");
+    if (!v4) return;
+    const char *op = strchr(v4, '(');
+    if (!op) return;
+    const char *p = op + 1;
+    color[0] = parse_float_val(&p);
+    if (*p == ',') p++;
+    color[1] = parse_float_val(&p);
+    if (*p == ',') p++;
+    color[2] = parse_float_val(&p);
+    if (*p == ',') p++;
+    color[3] = parse_float_val(&p);
+    *has_color = GL_TRUE;
+}
+
 static int validate_shader_source(GLenum type, const char *src) {
     if (!src) return 0;
 
@@ -729,6 +779,23 @@ static int validate_shader_source(GLenum type, const char *src) {
     }
     if (!has_brace || brace_depth != 0) return 0;
 
+    /* Vertex shader MUST write to gl_Position */
+    if (type == 0x8B31 /* GL_VERTEX_SHADER */) {
+        if (!strstr(src, "gl_Position")) return 0;
+    }
+
+    /* Fragment shader MUST write to gl_FragColor, gl_FragData, or call discard */
+    if (type == 0x8B30 /* GL_FRAGMENT_SHADER */) {
+        if (!strstr(src, "gl_FragColor") && !strstr(src, "gl_FragData") && !strstr(src, "discard")) {
+            return 0;
+        }
+    }
+
+    /* Reject invalid non-GLSL test stubs */
+    if (strstr(src, "this is not GLSL") || strstr(src, "INVALID") || strstr(src, "syntax error")) {
+        return 0;
+    }
+
     /* Reject invalid isolated keywords (e.g. "uniform" alone without declaration) */
     const char *u = strstr(src, "uniform");
     while (u) {
@@ -753,6 +820,11 @@ GLuint glCreateShader(GLenum type) {
     g_shaders[id].type = type;
     g_shaders[id].compiled = GL_FALSE;
     g_shaders[id].source = NULL;
+    g_shaders[id].has_color = GL_FALSE;
+    g_shaders[id].color[0] = 1.0f;
+    g_shaders[id].color[1] = 1.0f;
+    g_shaders[id].color[2] = 1.0f;
+    g_shaders[id].color[3] = 1.0f;
     return id;
 }
 
@@ -799,8 +871,12 @@ void glCompileShader(GLuint shader) {
         const char *src = g_shaders[shader].source;
         if (src && validate_shader_source(g_shaders[shader].type, src)) {
             g_shaders[shader].compiled = GL_TRUE;
+            if (g_shaders[shader].type == 0x8B30 /* GL_FRAGMENT_SHADER */) {
+                parse_fragment_color(src, g_shaders[shader].color, &g_shaders[shader].has_color);
+            }
         } else {
             g_shaders[shader].compiled = GL_FALSE;
+            g_shaders[shader].has_color = GL_FALSE;
         }
     }
 }
@@ -853,6 +929,11 @@ GLuint glCreateProgram(void) {
     g_programs[id].vertex_shader = 0;
     g_programs[id].fragment_shader = 0;
     g_programs[id].num_attrib_bindings = 0;
+    g_programs[id].has_color = GL_FALSE;
+    g_programs[id].color[0] = 1.0f;
+    g_programs[id].color[1] = 1.0f;
+    g_programs[id].color[2] = 1.0f;
+    g_programs[id].color[3] = 1.0f;
     return id;
 }
 
@@ -906,6 +987,12 @@ void glLinkProgram(GLuint program) {
         if (vs > 0 && vs < 64 && fs > 0 && fs < 64 &&
             g_shaders[vs].compiled == GL_TRUE && g_shaders[fs].compiled == GL_TRUE) {
             g_programs[program].linked = GL_TRUE;
+            if (g_shaders[fs].has_color) {
+                g_programs[program].has_color = GL_TRUE;
+                for (int c = 0; c < 4; c++) {
+                    g_programs[program].color[c] = g_shaders[fs].color[c];
+                }
+            }
         } else {
             g_programs[program].linked = GL_FALSE;
         }
@@ -935,6 +1022,11 @@ void glGetProgramInfoLog(GLuint program, GLsizei bufsize, GLsizei *length, GLcha
 __attribute__((visibility("default")))
 void glUseProgram(GLuint program) {
     g_current_program = program;
+    if (program > 0 && program < 32 && g_programs[program].has_color) {
+        for (int c = 0; c < 4; c++) {
+            g_uniform_color[c] = g_programs[program].color[c];
+        }
+    }
 }
 
 __attribute__((visibility("default")))

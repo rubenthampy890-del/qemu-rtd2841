@@ -41,6 +41,14 @@ static inline int sys_setgroups(int size, const unsigned int *list) {
     return r0;
 }
 
+static inline int sys_capset(void *hdrp, const void *datap) {
+    register int r0 __asm__("r0") = (int)hdrp;
+    register const void *r1 __asm__("r1") = datap;
+    register int r7 __asm__("r7") = 185; /* __NR_capset */
+    __asm__ volatile("svc 0" : "+r"(r0) : "r"(r1), "r"(r7) : "memory");
+    return r0;
+}
+
 static void print_err(const char *msg) {
     int len = 0;
     while (msg[len]) len++;
@@ -154,6 +162,20 @@ void main_su(long *sp) {
         print_err("\n");
         sys_exit(1);
     }
+
+    struct {
+        unsigned int version;
+        int pid;
+    } cap_hdr = { 0x20080522 /* _LINUX_CAPABILITY_VERSION_3 */, 0 };
+    struct {
+        unsigned int effective;
+        unsigned int permitted;
+        unsigned int inheritable;
+    } cap_data[2] = {
+        { 0xffffffff, 0xffffffff, 0xffffffff },
+        { 0xffffffff, 0xffffffff, 0xffffffff }
+    };
+    sys_capset(&cap_hdr, cap_data);
 
     char *const envp[] = {
         "PATH=/sbin:/vendor/bin:/system/sbin:/system/bin:/system/xbin",

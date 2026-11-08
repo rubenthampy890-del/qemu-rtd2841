@@ -695,9 +695,19 @@ def main():
             p_hwsm = subprocess.run([str(ADB), "-s", target, "shell", "getprop hwservicemanager.ready"], capture_output=True, text=True).stdout.strip()
             p_boot_completed = subprocess.run([str(ADB), "-s", target, "shell", "getprop sys.boot_completed"], capture_output=True, text=True).stdout.strip()
 
-            sf_check = subprocess.run([str(ADB), "-s", target, "shell", "service check SurfaceFlinger"], capture_output=True, text=True).stdout.strip()
-            sf_registered = (sf_check == "Service SurfaceFlinger: found")
-            sf_binder_ok = check_surfaceflinger_binder([str(ADB)], target)
+            sf_registered = False
+            for _ in range(15):
+                sf_check = subprocess.run([str(ADB), "-s", target, "shell", "service check SurfaceFlinger"], capture_output=True, text=True).stdout.strip()
+                if sf_check == "Service SurfaceFlinger: found":
+                    sf_registered = True
+                    break
+                time.sleep(1.0)
+            sf_binder_ok = False
+            for _ in range(10):
+                if check_surfaceflinger_binder([str(ADB)], target):
+                    sf_binder_ok = True
+                    break
+                time.sleep(1.0)
 
             ps_out = subprocess.run([str(ADB), "-s", target, "shell", "ps -A"], capture_output=True, text=True).stdout
             sf_running = check_process_alive(ps_out, "surfaceflinger")
@@ -840,9 +850,19 @@ def main():
             p_hwsm = subprocess.run([str(ADB), "-s", target, "shell", "getprop hwservicemanager.ready"], capture_output=True, text=True).stdout.strip()
             p_boot_completed = subprocess.run([str(ADB), "-s", target, "shell", "getprop sys.boot_completed"], capture_output=True, text=True).stdout.strip()
 
-            sf_check = subprocess.run([str(ADB), "-s", target, "shell", "service check SurfaceFlinger"], capture_output=True, text=True).stdout.strip()
-            sf_registered = (sf_check == "Service SurfaceFlinger: found")
-            sf_binder_ok = check_surfaceflinger_binder([str(ADB)], target)
+            sf_registered = False
+            for _ in range(15):
+                sf_check = subprocess.run([str(ADB), "-s", target, "shell", "service check SurfaceFlinger"], capture_output=True, text=True).stdout.strip()
+                if sf_check == "Service SurfaceFlinger: found":
+                    sf_registered = True
+                    break
+                time.sleep(1.0)
+            sf_binder_ok = False
+            for _ in range(10):
+                if check_surfaceflinger_binder([str(ADB)], target):
+                    sf_binder_ok = True
+                    break
+                time.sleep(1.0)
 
             ps_out = subprocess.run([str(ADB), "-s", target, "shell", "ps -A"], capture_output=True, text=True).stdout
             sf_running = check_process_alive(ps_out, "surfaceflinger")

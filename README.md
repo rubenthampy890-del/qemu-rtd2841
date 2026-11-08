@@ -1,253 +1,418 @@
-# qemu-rtd2841
+# OpenDTV — RTD2841 TV emulator
 
 [![CI Build & Emulation Test](https://github.com/rubenthampy890-del/qemu-rtd2841/actions/workflows/ci.yml/badge.svg)](https://github.com/rubenthampy890-del/qemu-rtd2841/actions/workflows/ci.yml)
-[![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)](LICENSE)
 
-QEMU machine model and system emulator for the Realtek RTD2841 / RTK284x SoC (TCL RT41 chassis, board profile `tv030`).
+OpenDTV models the Realtek RTD2841 / RTK284x hardware used by the TCL RT41 TV chassis, board profile `tv030`, inside QEMU. The target has four Cortex-A53 CPUs running **32-bit ARM code (AArch32)**. The retail software stack is Linux 4.4.3 and Android 9 Pie, also called UnionTV.
 
-Used in commercial Android Smart TVs (TCL, Xiaomi, Hisense, etc.). This model enables developers and security researchers to run bare-metal diagnostics, reverse-engineer peripherals, and boot Linux kernels without risking physical hardware or requiring board rework.
+**Start with the hardware diagnostics below.** You can build and run them using public source code, without a TV or a firmware download. Linux and Android experiments additionally need separately prepared firmware assets.
 
-> **Project Scope & Verification Boundary**: This repository implements a QEMU machine model for RTD2841/RTK284x platform emulation. Verification is organized into 3 transparent testing tiers: Tier 1 Bare-Metal Silicon Suite (AArch32 CPU, GICv2, TC0 timer with monotonic up-count and INTID 34 IRQ trap, SDHCI capabilities, and RTL8168 bare-metal packet TX/RX via SLIRP), Tier 2 Storage Media Insertion Suite (card insertion detection `PRSNT_ST = 0x01FF0000`), and Tier 3 Full-System Linux 4.4 & Userspace Bring-Up (dual ext4 rootfs, simple-framebuffer, live outbound network ping/dns/http) (see [HARDWARE_FIDELITY.md](HARDWARE_FIDELITY.md)).
+**Android bring-up is still in progress.** ADB and several native services run locally, but the latest independent check did not reach a working Android application screen. A color pattern or a running SurfaceFlinger process does not mean Android has finished booting.
 
----
+## Choose your goal
 
-## Verification Architecture & Testing Tiers
+| Goal | What you need | Where to start |
+| --- | --- | --- |
+| Build the emulator and test the hardware model | This repository, build tools and internet access | Steps 1–6 |
+| Open the framebuffer color bars | The build from steps 1–6 and a desktop session | Step 7 |
+| Test a compatible Linux kernel and prepared eMMC disk | The build plus your own compatible boot assets | [Linux firmware tests](#linux-firmware-tests) |
+| Work on Android startup and graphics | Vendor system/vendor files, compatible kernel, prepared disk and development tools | [Android and kernel development](#android-and-kernel-development) |
 
-Platform emulation is evaluated across three strictly defined testing tiers to establish clear verification boundaries:
+## Before typing commands
 
-- **Tier 1: Automated Headless CI Bare-Metal Silicon Suite**: Runs in <10s on GitHub Actions (`ubuntu-latest`) with zero proprietary blobs. Verifies Cortex-A53 in AArch32 mode, GICv2 distributor (256 INTIDs), Realtek TC0 27 MHz monotonic timer up-count & CPU INTID 34 IRQ trap delivery, SDHCI controller MMIO capabilities, and RTL8168GU Ethernet bare-metal packet TX/RX exchange via QEMU SLIRP.
-- **Tier 2: Storage Media Insertion Suite**: Verifies SDHCI controller with synthetic drive attached (`-drive file=...,format=raw,if=sd`), asserting media presence and block ready status (`PRSNT_ST = 0x01FF0000`).
-- **Tier 3: Full-System Linux 4.4 & Userspace Bring-Up**: Requires local vendor firmware and is skipped by public CI. On October 26, 2026, an isolated rebuild of the vendor kernel and QEMU model passed the stricter local runner with four CPUs, both ext4 mounts, DHCP, zero packet loss, DNS, and HTTP. The original prebuilt kernel still activates only CPU 0. The isolated kernel build disables five unavailable netfilter options; see [HARDWARE_FIDELITY.md](HARDWARE_FIDELITY.md) for the exact scope.
+- **Host** means your Mac or Linux computer. **Guest** means the emulated TV. All numbered setup steps run in a **host terminal**.
+- On macOS, open **Terminal**. On Ubuntu Desktop, open **Terminal**, usually with **Ctrl+Alt+T**.
+- Use the **same terminal window** throughout setup. Variables such as `OPENDTV_ROOT` exist in that terminal session.
+- Copy commands without a leading `$` or other prompt. None of the command blocks below include prompt characters.
+- A backslash `\` at the end of a line continues the command on the next line. It must be the **last character**: no spaces or comments after it. Paste the whole block. If the terminal waits at a `>` prompt after an incomplete paste, press **Ctrl+C** and paste again.
+- Keep the source and build directories free of spaces and colons. This pinned QEMU version rejects such paths even when quoted. The example uses `~/opendtv-work/qemu-rtd2841`.
+- Stop if a command reports an error. Do not continue to the next step until the failed step succeeds. [Troubleshooting](#troubleshooting) covers common failures.
+- Reserve several gigabytes for QEMU source/build output, plus additional space for any firmware images. Each emulated guest here is configured with 1 GiB RAM. These are working allocations, not measured minimum host requirements.
 
-Phase 3 has also reached authenticated TCP ADB: the extracted ARM32 `adbd`
-started directly from the source-built `mini_init` on a fresh local guest
-boot, and a host ADB shell returned successfully. This was verified only with
-a disposable disk overlay and a local test key; Android init and framework
-services remain open. Local research notes and test records are kept outside
-the public repository.
+The detailed Linux instructions target **Ubuntu 24.04 LTS**. Other distributions need equivalent packages and Python 3.12 or newer; their package commands are not interchangeable. The Mac build was checked on Apple Silicon. Intel Mac execution has not been independently checked in this documentation pass.
 
----
+## 1. Install the host tools
 
-## Run it on a new computer
+Choose **one** subsection for your operating system.
 
-The public repository contains the RTD2841 QEMU patch and bare-metal test
-**source**. It does not contain a built emulator, Android firmware, or the
-vendor Linux kernel. These steps build the emulator and run the two public
-hardware test tiers. They do not boot Android. Run each command in a host
-terminal (macOS or Ubuntu), not inside a QEMU guest.
+### macOS
 
-### 1. Install build tools
+First check for Apple's developer tools:
 
-On **Ubuntu/Debian**:
+```bash
+xcode-select -p
+```
+
+If this reports an active developer directory, continue. Otherwise run:
+
+```bash
+xcode-select --install
+```
+
+Finish the installer before continuing. Install [Homebrew using its official instructions](https://docs.brew.sh/Installation), including the installer's **Next steps** for adding `brew` to your shell. Then check:
+
+```bash
+brew --version
+```
+
+Install the packages; do not prefix `brew install` with `sudo`:
+
+```bash
+brew install git ninja pkgconf glib pixman libslirp dtc python@3.14 arm-none-eabi-binutils
+```
+
+Use Bash for the remaining commands, and select the installed Python explicitly:
+
+```bash
+bash
+export PYTHON="$(brew --prefix python@3.14)/bin/python3.14"
+export OPENDTV_DISPLAY=cocoa
+```
+
+Package names were checked against Homebrew's catalogue. [`pkgconf`](https://formulae.brew.sh/formula/pkgconf) provides the `pkg-config` command; [`arm-none-eabi-binutils`](https://formulae.brew.sh/formula/arm-none-eabi-binutils) provides the ARM assembler, linker and binary converter. `dtc` compiles device trees. The public assembly tests do **not** need an ARM C compiler.
+
+### Ubuntu 24.04 LTS
+
+Check your release:
+
+```bash
+cat /etc/os-release
+```
+
+Install the build dependencies:
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential git ninja-build meson pkg-config \
-    libglib2.0-dev libpixman-1-dev libslirp-dev device-tree-compiler \
-    python3 binutils-arm-none-eabi
+sudo apt install -y build-essential git ninja-build pkg-config \
+    libglib2.0-dev libpixman-1-dev libslirp-dev libfdt-dev zlib1g-dev \
+    libgtk-3-dev device-tree-compiler python3 python3-venv \
+    binutils-arm-none-eabi ca-certificates
 ```
 
-On **macOS**, install [Homebrew](https://brew.sh/) and Apple's command line
-tools first. If `xcode-select -p` reports that the tools are missing, run
-`xcode-select --install` and finish the installer. Then run:
+Some packages are in Ubuntu's **Universe** repository. If `apt` cannot locate them, enable Universe and retry the installation:
 
 ```bash
-brew install git ninja meson pkg-config glib pixman libslirp dtc \
-    python arm-none-eabi-binutils
+sudo apt install -y software-properties-common
+sudo add-apt-repository universe
+sudo apt update
 ```
 
-Check the installed commands before continuing:
+Use Bash and select the host Python and graphical backend:
 
 ```bash
-for tool in git ninja dtc python3 arm-none-eabi-as; do
-    command -v "$tool" || exit 1
+bash
+export PYTHON=python3
+export OPENDTV_DISPLAY=gtk
+```
+
+The names above were checked against the Ubuntu 24.04 package catalogue, including [`binutils-arm-none-eabi`](https://packages.ubuntu.com/noble/binutils-arm-none-eabi), [`python3-venv`](https://packages.ubuntu.com/noble/python3-venv) and [`libgtk-3-dev`](https://packages.ubuntu.com/noble/libgtk-3-dev). GTK is for the Linux display window; terminal-only tests do not need a desktop session.
+
+### Check prerequisites on either host
+
+```bash
+"$PYTHON" -c 'import sys; print(sys.version); assert sys.version_info >= (3, 12), "QEMU requires Python 3.12 or newer"'
+for tool in git make cc ninja pkg-config dtc arm-none-eabi-as arm-none-eabi-ld arm-none-eabi-objcopy; do
+    command -v "$tool" || break
 done
-pkg-config --modversion slirp
+pkg-config --modversion glib-2.0 pixman-1 slirp
 ```
 
-The Ubuntu package set and build sequence match the
-repository's GitHub Actions job. The macOS package set has not been tested
-on a fresh Mac.
+The loop must print a path for **every** listed tool. The final command must print three library version numbers. Fix any missing tool/library before building. Python 3.12 is required by the pinned QEMU `configure` script; an older Python bundled with the operating system may be insufficient.
 
-### 2. Clone OpenDTV and the pinned QEMU source
+## 2. Download OpenDTV
+
+For a new checkout:
 
 ```bash
+mkdir -p "$HOME/opendtv-work"
+cd "$HOME/opendtv-work"
 git clone https://github.com/rubenthampy890-del/qemu-rtd2841.git
 cd qemu-rtd2841
-
-mkdir qemu-upstream
-cd qemu-upstream
-git init
-git remote add origin https://gitlab.com/qemu-project/qemu.git
-git fetch --depth 1 origin a19f59a72d96056d9a8f48cf6c77f5787491e414
-git checkout FETCH_HEAD
+export OPENDTV_ROOT="$PWD"
+printf 'Project directory: %s\n' "$OPENDTV_ROOT"
+git rev-parse --short HEAD
 ```
 
-The long hash is the upstream QEMU revision used by public CI. It matters
-because the RTD2841 patch is tested against that exact source tree.
+Record the printed commit when reporting a problem. If `qemu-rtd2841` already exists, use that checkout deliberately; do not delete it to make the clone command succeed. Check local changes with `git status` first.
 
-### 3. Apply the board patch and build QEMU
+QEMU and the diagnostic payloads are separate builds:
 
-Still inside `qemu-upstream`:
-
-```bash
-git apply --check ../patches/qemu-rtd2841-complete.patch
-git apply ../patches/qemu-rtd2841-complete.patch
-mkdir build
-cd build
-../configure --target-list=aarch64-softmmu --enable-slirp \
-    --disable-werror --disable-docs --disable-tools
-ninja qemu-system-aarch64
-cd ../..
-./qemu-upstream/build/qemu-system-aarch64 -M help | grep rtd2841
+```text
+Your computer runs qemu-system-aarch64
+    └── its rtd2841-tv030 machine runs an ARM32 diagnostic or Linux kernel
 ```
 
-The final command must list `rtd2841-tv030`. The executable is named
-`qemu-system-aarch64` because it models Cortex-A53 hardware; the TV guest
-still runs ARM32/AArch32 code. A system-installed QEMU without this patch
-does not provide the RTD2841 machine.
+The name `qemu-system-aarch64` describes the emulator executable. It does not turn this TV firmware into 64-bit Android. A normal distribution/Homebrew QEMU package does not include this project's machine model.
 
-### 4. Build the diagnostics and device tree
+## 3. Download the exact QEMU revision
 
-From the `qemu-rtd2841` directory:
+From the OpenDTV directory:
 
 ```bash
+export QEMU_SRC="$OPENDTV_ROOT/build/qemu-src"
+mkdir -p "$QEMU_SRC"
+git -C "$QEMU_SRC" init
+git -C "$QEMU_SRC" remote add origin https://gitlab.com/qemu-project/qemu.git
+git -C "$QEMU_SRC" fetch --depth 1 origin a19f59a72d96056d9a8f48cf6c77f5787491e414
+git -C "$QEMU_SRC" checkout --detach FETCH_HEAD
+git -C "$QEMU_SRC" rev-parse HEAD
+```
+
+The last command must print `a19f59a72d96056d9a8f48cf6c77f5787491e414`. A detached-HEAD notice is expected: this intentionally selects one source revision. Do not substitute the latest QEMU release; the patch is tied to this revision.
+
+These are first-time commands. If Git says the remote already exists, inspect the existing source directory instead of repeatedly applying setup commands.
+
+## 4. Apply the model and build QEMU
+
+Check the patch before applying it:
+
+```bash
+git -C "$QEMU_SRC" apply --check "$OPENDTV_ROOT/patches/qemu-rtd2841-complete.patch"
+git -C "$QEMU_SRC" apply "$OPENDTV_ROOT/patches/qemu-rtd2841-complete.patch"
+```
+
+Successful patch commands normally print nothing. An error is not success. Apply the patch only once to a clean pinned QEMU checkout.
+
+**macOS configuration:**
+
+```bash
+mkdir -p "$QEMU_SRC/build"
+cd "$QEMU_SRC/build"
+../configure --target-list=aarch64-softmmu --enable-slirp --enable-pixman \
+    --enable-tools --enable-cocoa --disable-rust --disable-werror \
+    --disable-docs --python="$PYTHON"
+```
+
+**Ubuntu configuration:**
+
+```bash
+mkdir -p "$QEMU_SRC/build"
+cd "$QEMU_SRC/build"
+../configure --target-list=aarch64-softmmu --enable-slirp --enable-pixman \
+    --enable-tools --enable-gtk --disable-rust --disable-werror \
+    --disable-docs --python="$PYTHON"
+```
+
+`--enable-slirp` supplies user-mode networking. Cocoa and GTK are the Mac and Linux window backends. `--enable-tools` includes the `qemu-img` disk utility. Rust devices are not needed by this machine. Configuration may download QEMU subprojects and Python build dependencies into the build environment; allow it to finish. Do not use `sudo pip` to solve a configuration failure.
+
+**Then, on either host:**
+
+```bash
+ninja -j4 qemu-system-aarch64 qemu-img
+cd "$OPENDTV_ROOT"
+export QEMU_BIN="$QEMU_SRC/build/qemu-system-aarch64"
+export QEMU_IMG="$QEMU_SRC/build/qemu-img"
+"$QEMU_BIN" --version
+"$QEMU_BIN" -machine help | grep -F rtd2841-tv030
+"$QEMU_BIN" -display help
+"$QEMU_IMG" --version
+```
+
+`-j4` limits the build to four concurrent jobs. Use `-j2` if the compiler runs out of memory. Wait for Ninja to finish without `FAILED` or `ninja: build stopped` messages.
+
+The machine list must include `rtd2841-tv030`. The display list must include `cocoa` on macOS or `gtk` on Ubuntu for step 7. Neither a system QEMU binary nor a successful download alone passes these checks.
+
+## 5. Build the ARM diagnostics and device tree
+
+```bash
+cd "$OPENDTV_ROOT"
 make -C tests clean
 make -C tests
 dtc -I dts -O dtb -o dts/rtd284x-tv030.dtb dts/rtd284x-tv030.dts
 ```
 
-The Makefile assembles the ARM32 test payloads from their `.s` source files.
-The device tree describes the `tv030` board to the guest. The repository has
-checked-in test binaries and a DTB, but the runner does not rebuild them.
-The `clean` step ensures the diagnostics used here match their source.
+The Makefile assembles **and links** the ARM code at the required address before creating `.bin` files. It also checks the SMP startup instructions. Rebuild these files even if binaries already exist in the checkout.
 
-### 5. Run the public hardware tests
+The device-tree source (`.dts`) describes the board's memory and devices. `dtc` converts it into the binary `.dtb` passed to the emulator. Compiler warnings are printed separately from fatal errors; retain the complete output when reporting a failure.
 
-```bash
-QEMU_BIN="$PWD/qemu-upstream/build/qemu-system-aarch64" \
-    python3 tests/run_ci_test.py
-```
-
-Tier 1 checks the CPU, interrupt controller, timer, SDHCI, and Ethernet
-model. Tier 2 attaches a temporary synthetic disk and checks card detection.
-On a fresh clone, Tier 3 prints a **skip notice** because the vendor kernel
-and firmware disk are absent. A final `ALL CI HARDWARE AUTOMATION TESTS
-PASSED` message therefore means the available tiers passed; it is not an
-Android boot result.
-
-To open the bare-metal framebuffer test on macOS after the build:
+## 6. Run the automated hardware tests
 
 ```bash
-QEMU_BIN="$PWD/qemu-upstream/build/qemu-system-aarch64" \
-    DISPLAY_BACKEND=cocoa ./scripts/run_qemu.sh tests/firmware_fb_test.bin
+cd "$OPENDTV_ROOT"
+QEMU_BIN="$QEMU_BIN" "$PYTHON" tests/run_ci_test.py
 ```
 
-The interactive image is a diagnostic dashboard, not Android TV.
+On a fresh checkout without firmware, expect:
 
-### Optional: local Linux firmware test
+| Test | Expected result | What it checks |
+| --- | --- | --- |
+| Tier 1 | Pass | CPU execution, timer up-count, IRQ delivery, SDHCI registers, Ethernet TX/RX |
+| Tier 2 | Pass | Card detection using a temporary synthetic disk |
+| Tier 3 | Explicit skip | Requires a compatible local Linux kernel and firmware disk |
 
-TCL publishes the [RTD2841 Linux kernel source](https://github.com/TCLOpenSource/rtk2841).
-Its [kernel source index](https://github.com/TCLOpenSource/TCL_Kernel_OpenSource)
-lists the `40S6500` family with Android P and Linux 4.4.3. This is source
-code, not a ready-to-boot `zImage` or an Android firmware image. A kernel
-built from it still needs the correct board configuration and device tree.
+The final `ALL CI HARDWARE AUTOMATION TESTS PASSED` banner covers the tiers that actually ran. A Tier 3 skip is normal here; it is **not** an Android boot result. The runner is headless, so no display window is expected.
 
-For TV firmware, start with [TCL support for the 40S6500](https://www.tcl.com/global/en/support/model/40s6500)
-and check the exact model, chassis, and regional build before using any
-download. We have not verified a direct firmware download for this build on
-that page. The complete firmware contains components with separate licenses;
-do not assume that the kernel's GPL license covers the Android and vendor
-files inside it. This repository does not redistribute the firmware.
+If the command fails, retain its output and check the troubleshooting table. Do not proceed on the assumption that a pass from an earlier checkout still applies.
 
-Tier 3 needs a **compatible** RTD2841 Linux `zImage` and a composite eMMC
-image with the expected root and vendor partitions. These prepared boot assets
-are not distributed here. An OTA archive alone is not a bootable input; the
-original Android root `/init` has not been recovered from the encrypted boot
-payload. If you already have prepared assets, install `qemu-img` (`qemu-utils`
-on Ubuntu or `qemu` through Homebrew), then run:
+## 7. Open the color-bar display
+
+Run from the same host terminal. `OPENDTV_DISPLAY` was set in step 1:
 
 ```bash
-QEMU_BIN="$PWD/qemu-upstream/build/qemu-system-aarch64" \
-KERNEL_BIN="/absolute/path/to/zImage" \
-STORAGE_IMAGE="/absolute/path/to/emmc.raw" \
-QEMU_IMG="/absolute/path/to/qemu-img" \
-python3 tests/run_ci_test.py
+"$QEMU_BIN" -M rtd2841-tv030 -m 1024M -smp 4 \
+    -dtb "$OPENDTV_ROOT/dts/rtd284x-tv030.dtb" \
+    -kernel "$OPENDTV_ROOT/tests/firmware_fb_test.bin" \
+    -nic user,model=rtd2841-eth \
+    -monitor none -serial mon:stdio -display "$OPENDTV_DISPLAY"
 ```
 
-The runner creates a temporary qcow2 overlay so the reference eMMC image is
-not written by this test. The public tiers still run first. Tier 3 verifies
-Linux boot and network access; it does not verify a complete Android TV UI.
+You should see eight vertical color bars in a 1920×1080 framebuffer. This diagnostic uses no Android firmware and no disk. It remains running after drawing; that is expected.
 
-## What's Implemented
+**Quit from the host terminal:** hold **Control**, press **A**, release both keys, then press **X**. This is QEMU's serial escape sequence, not Command+X on a Mac. To open the QEMU monitor instead, use **Control+A**, then **C**; type `quit` and press Enter. The monitor prompt is `(qemu)` and is not a guest Linux shell.
 
-- **Cortex-A53 quad-core**: Pinned to AArch32 mode (`aarch64=false`) to match Realtek's 32-bit TV firmware stack. The per-core mailboxes at `0x504`, `0x508`, and `0x50c` passed bare-metal release and reset tests, then brought all four CPUs online with the isolated vendor kernel rebuild.
-- **GIC-400 (GICv2)**: Distributor at `0x18081000`, CPU interface at `0x18082000`, 256 IRQs.
-- **16550A UART0**: Base `0x18062300`, 4-byte register stride (`shift = 2`), 27 MHz clock. Mapped to stdio.
-- **Hardware Timers**: **Fully Verified** — 8 independent 27 MHz monotonic up-counters (`TC0`..`TC7`) at `0x1801B600` (reporting `limit - count` to CVR registers) with periodic reload, matching Realtek Linux `sched_clock`. Verified via active monotonic up-count assertion and GIC INTID 34 hardware CPU IRQ trap delivery.
-- **Watchdog**: Stub at `0x18062200` to keep vendor driver probes from hanging.
-- **eMMC / SDHCI**: **Verified** — QEMU SysBus SDHCI controller at `0x18010800` (SPI 18 / INTID 50). Verified via MMIO capabilities, card insertion detection (`PRSNT_ST = 0x01FF0000`), and ext4 filesystem mount under Linux (`-drive file=...,if=sd`).
-- **Gigabit Ethernet**: **Fully Verified** — RTL8168GU MAC at `0x18016000` (SPI 20 / INTID 52) with DMA rings, link state emulation, and QEMU SLIRP user networking (`-nic user,model=rtd2841-eth`). Verified via bare-metal packet TX/RX exchange with SLIRP backend in CI and Linux 4.4 kernel driver-up/ping/dns/http locally.
-- **Framebuffer**: Simple framebuffer at `0x3E000000` (8 MB DRAM carveout at 992 MB offset, 1920x1080 @ 32bpp ARGB8888). Compatible with Linux `simple-framebuffer`.
-- **RBUS Window**: 4 MB peripheral catch-all (`0x18000000` - `0x18400000`) so unmodeled register reads return 0 instead of taking bus aborts.
+For a Linux server without a desktop, keep using step 6. GTK requires a working local graphical session; a successful SSH login alone does not provide one. The diagnostic screenshot below is an example, not proof of the state of your current run.
 
----
+![Bare-metal color-bar diagnostic](tests/smpte_color_bars.png)
 
-## Visual Verification
+## 8. Return later or rebuild after changes
 
-| SMPTE 1080p Bars | OSD Dashboard | Interactive Input (HDMI 1) |
-| :---: | :---: | :---: |
-| ![SMPTE Color Bars](tests/smpte_color_bars.png) | ![TCL Smart TV Dashboard](tests/tcl_tv_dashboard.png) | ![HDMI 1 Selected](tests/tcl_tv_hdmi1_selected.png) |
-| *Bare-metal framebuffer test pattern (`tests/firmware_fb_test.bin`)* | *OSD dashboard (`/bin/fb_test --loop`)* | *Console keyboard input handling (`/bin/fb_test`)* |
+A new terminal does not remember the variables from setup. Recreate them:
 
----
+```bash
+bash
+export OPENDTV_ROOT="$HOME/opendtv-work/qemu-rtd2841"
+export QEMU_SRC="$OPENDTV_ROOT/build/qemu-src"
+export QEMU_BIN="$QEMU_SRC/build/qemu-system-aarch64"
+export QEMU_IMG="$QEMU_SRC/build/qemu-img"
+cd "$OPENDTV_ROOT"
+```
 
-## Memory Map
+On macOS:
 
-Base addresses verified against Realtek Linux 4.4 vendor kernel sources (`arch/arm/mach-rtd284x/`):
+```bash
+export PYTHON="$(brew --prefix python@3.14)/bin/python3.14"
+export OPENDTV_DISPLAY=cocoa
+```
+
+On Ubuntu:
+
+```bash
+export PYTHON=python3
+export OPENDTV_DISPLAY=gtk
+```
+
+You can now repeat steps 6–7 without downloading or rebuilding. If you edited diagnostic source, repeat step 5. If you edited the **applied QEMU source**, rebuild with:
+
+```bash
+ninja -C "$QEMU_SRC/build" -j4 qemu-system-aarch64 qemu-img
+```
+
+Editing `qemu-model/` in OpenDTV does not automatically update the applied files in `build/qemu-src/`. Likewise, pulling a new OpenDTV patch does not update an existing patched QEMU tree. For a new patch version, preserve the old build and repeat steps 3–4 with a new `QEMU_SRC` directory, such as `build/qemu-src-next`.
+
+## Linux firmware tests
+
+This section is for people who **already have compatible prepared assets**. Neither an OTA `Update.img` nor the kernel source directory is a bootable `zImage` or composite disk.
+
+| Input | Meaning |
+| --- | --- |
+| `zImage` | Built ARM32 RTD2841 Linux kernel compatible with the model and DTB |
+| `emmc.raw` | Composite disk with the expected root filesystem and vendor partitions; the test's `/init` must exist |
+| `qemu-img` | Host disk utility built in step 4 |
+
+Set the first two paths to files you actually have. These example paths are placeholders:
+
+```bash
+export KERNEL_BIN="/absolute/path/to/zImage"
+export STORAGE_IMAGE="/absolute/path/to/emmc.raw"
+test -s "$KERNEL_BIN" && test -s "$STORAGE_IMAGE"
+"$QEMU_IMG" info -f raw "$STORAGE_IMAGE"
+```
+
+If either file check fails, stop. Then run:
+
+```bash
+QEMU_BIN="$QEMU_BIN" QEMU_IMG="$QEMU_IMG" \
+    KERNEL_BIN="$KERNEL_BIN" STORAGE_IMAGE="$STORAGE_IMAGE" \
+    "$PYTHON" tests/run_ci_test.py
+```
+
+The runner uses a temporary qcow2 overlay for the Linux test: guest writes go to the overlay, preserving the backing raw file. Passing Tier 3 establishes the runner's Linux/storage/network checks, not a complete Android UI. The root filesystem must provide the expected diagnostic init behavior; an arbitrary ARM Linux image will not satisfy that contract.
+
+## Android and kernel development
+
+### Where the assets come from
+
+TCL publishes [RTD2841 kernel source](https://github.com/TCLOpenSource/rtk2841). Its [kernel source index](https://github.com/TCLOpenSource/TCL_Kernel_OpenSource) identifies the 40S6500 family with Android P and Linux 4.4.3. That source is separate from retail firmware and is not a prebuilt kernel.
+
+For firmware availability, use TCL's support channel for the **exact model, RT41 chassis and region**. This project does not provide a verified universal firmware download. It also does not redistribute the retail system/vendor images or a prepared Android disk. The kernel source license does not establish redistribution permission for every component in a retail firmware package.
+
+### What is needed to reproduce the Android research image
+
+The local research setup consists of these separate pieces:
+
+1. A compatible vendor kernel build with the relevant patches, configuration and DTB.
+2. Extracted ARM32 Android `/system` and `/vendor` content from the matching firmware.
+3. A composite eMMC image with root, vendor and persistent `/data` partitions.
+4. Source-built `mini_init`, `su`, the experimental graphics library, device setup and the required Android service environment.
+5. The developer's own ADB public key installed in the guest; the private key stays on the host.
+
+**There is not yet a verified beginner recipe that creates a complete working Android TV from these inputs on a fresh machine.** Current tools expose parts of the process, but publishing them as a finished installation sequence would reproduce known startup/rendering failures:
+
+| File | Current purpose and boundary |
+| --- | --- |
+| `scripts/build_kernel.sh` | Vendor-kernel build helper. Requires a suitable source tree, cross compiler and configuration. It has historical path/container assumptions; it is not the public QEMU build command. |
+| `patches/linux-4.4.3-rtd2841-qemu.patch` | Vendor-kernel integration patch. Successful parsing alone does not prove a fresh kernel build. |
+| `tools/create_emmc_storage.py` | Builds images from an already-extracted firmware layout. Its vendor staging uses macOS-specific utilities; it is not a verified Linux provisioning workflow. It writes image files and should not be run casually over existing staging assets. |
+| `tools/mini_init.c` | Experimental ARM32 PID 1 for mounting filesystems, properties and starting services. It does not implement all Android init behavior. |
+| `tools/software_egl_gles2.c` | Experimental graphics implementation. Shader/native-window behavior remains incomplete. |
+| `tests/run_milestone6_test.py` | Local provisioning/verification runner with expected asset paths. Its saved pass result does not establish a working framework/app screen. |
+| `tools/run_emulator_gui.sh` | Developer Mac launcher with Cocoa and expected local assets. It is not a portable installer or a Linux launcher. |
+
+As of the November 11 verification, the console-descriptor Zygote failure was fixed, but framework startup subsequently aborted on `/framework/core-oj.jar`. Property waiter notification and shader output also failed independent tests, and `logd` exited. These are runtime tasks to finish before claiming an Android release. The hardware-only build above remains useful independently.
+
+For the current hardware contracts and limitations, read [HARDWARE_FIDELITY.md](HARDWARE_FIDELITY.md). Do not use diagnostic dashboards or test-written pixels as evidence that Android rendered an application.
+
+## Repository structure
 
 ```text
-0x00000000 - 0x3FFFFFFF   1024 MB DRAM (System Memory)
-0x18000000 - 0x183FFFFF   4 MB Realtek RBUS Peripheral Window
-  0x18000000 (1 KB)       TMU Thermal Management Unit
-  0x18000400 (3 KB)       SYSREG / Pinmux / Clocks
-  0x18010800 (1 KB)       eMMC / SDHCI (SPI 18 / INTID 50)
-  0x18010C00 (1 KB)       SDIO Controller
-  0x18016000 (4 KB)       RTL8168GU Gigabit Ethernet MAC (SPI 20 / INTID 52)
-  0x1801B100 (768 B)      MISC UART1..3
-  0x1801B600 (512 B)      Hardware Timers TC0..TC7 (27 MHz, SPI 2 / INTID 34)
-  0x18040000 (16 KB)      Mali GPU registers
-  0x1805C800 (256 B)      ARM TSG
-  0x18062200 (256 B)      Watchdog Timer (SPI 0 / INTID 32)
-  0x18062300 (32 B)       16550A UART0 (4B stride, 27 MHz, SPI 25 / INTID 57)
-  0x18080000 (4 KB)       SCU System Control
-0x18081000 - 0x18081FFF   GIC-400 Distributor (GICD, 256 INTIDs)
-0x18082000 - 0x18083FFF   GIC-400 CPU Interface (GICC)
-0x3E000000 - 0x3E7FFFFF   Simple Framebuffer (8 MB DRAM carveout, 1920x1080 @ 32bpp)
+qemu-rtd2841/
+├── README.md                 Start here: build, run, expected results
+├── BUILD.md                  Short pointer to this build sequence
+├── HARDWARE_FIDELITY.md       Modeled hardware and verification boundaries
+├── qemu-model/               RTD2841 board, timer and IR model source
+├── patches/                  Patches applied to upstream QEMU/vendor Linux
+├── dts/                      Board device-tree sources and compiled DTBs
+├── tests/                    ARM diagnostics and host verification runners
+├── tools/                    Research init, graphics, storage and display tools
+├── scripts/                  Developer launch/build/input helpers
+└── build/                    Local generated files; ignored by Git
+    └── qemu-src/             Pinned, patched upstream QEMU checkout
+        └── build/            qemu-system-aarch64 and qemu-img
 ```
 
-See [HARDWARE_FIDELITY.md](HARDWARE_FIDELITY.md) for register layout notes and kernel code citations.
+`staging/`, `output/` and local research records are also ignored. Their presence on the author's computer does not mean a new clone contains them.
 
----
+The main implemented paths are the AArch32 CPUs, GIC interrupts, UART, timers, SDHCI/eMMC, Ethernet, simple framebuffer and IR input. Some other peripherals are partial or unimplemented. Consult the fidelity matrix rather than assuming the whole SoC is modeled.
 
-## Building QEMU with RTD2841 Support
+The project roadmap remains: **1. firmware extraction → 2. core silicon/Linux → 3. Android userspace → 4. multimedia/audio → 5. security/customization → 6. upstream QEMU submission.** Phase 3 is active; later phases are not requirements for the public diagnostic demo.
 
-Use the pinned source revision, patch check, build flags, and verification
-command in [Run it on a new computer](#run-it-on-a-new-computer). The pinned
-revision is the one exercised by public CI; compatibility with an arbitrary
-QEMU release has not been established.
+## Troubleshooting
 
----
+| What you see | What to check or do |
+| --- | --- |
+| `brew: command not found` | Complete Homebrew's printed shell setup and reopen the terminal; then restore the variables from step 8. |
+| `Unable to locate package ...` on Ubuntu | Confirm Ubuntu 24.04, run `sudo apt update`, and enable Universe as described in step 1. Do not substitute guessed package names. |
+| Python version error / `ensurepip` missing | Mac: use the selected Homebrew Python. Ubuntu: install `python3-venv`. Check `"$PYTHON" --version`; this pinned QEMU needs 3.12+. |
+| `main directory cannot contain spaces nor colons` | Use a new source/build location without spaces or colons. Quoting the path does not remove QEMU's restriction. |
+| `patch does not apply` | Check the exact upstream commit and whether the patch was already applied. Do not use `--reject` and continue with a partial model. |
+| `Dependency ... not found` / missing `slirp` | Recheck step 1 and `pkg-config --modversion glib-2.0 pixman-1 slirp`. Reconfigure after resolving dependencies. |
+| `ninja: ... build.ninja: No such file` | Configuration did not complete, or you are in the wrong directory. Read the first configure error; do not treat Ninja's message as the original cause. |
+| Compiler killed / out of memory | Rerun Ninja with `-j2`; already-built objects are reused. |
+| `unsupported machine type` | Check `"$QEMU_BIN" -machine help`. Use the patched executable, not a system QEMU. |
+| No window during CI tests | Expected: step 6 is headless. Use step 7 for the color bars. |
+| `Display 'cocoa'/'gtk' is not available` | Check `"$QEMU_BIN" -display help`; configure the matching backend and rebuild. Cocoa is Mac-only. |
+| GTK cannot open a display | Run in a Linux desktop session or use the headless tests; do not assume SSH provides graphics. |
+| Terminal shows `>` and nothing happens | Cancel the incomplete command with Ctrl+C; paste the entire block, checking the final backslashes. |
+| Backspace behaves differently in the QEMU window | The GUI forwards keys to the emulated hardware. Use the host terminal for serial-shell typing. Mac's Delete key is normally Backspace; Forward Delete is a different key. Use the terminal escape sequence from step 7 to quit. |
+| Color bars appear, but no Android menus | Correct result for `firmware_fb_test.bin`. It is a bare-metal diagnostic. |
+| Tier 3 is skipped | Kernel/disk inputs were not found. This is expected for a fresh public checkout. |
+| Android screen stays blank despite a test pass | Check actual services/crashes; the current Android stack is incomplete. A framebuffer probe can pass without a functioning framework. |
 
-## Hardware Reversing Notes
+For an issue report, include the OpenDTV commit, host OS/CPU, Python version, QEMU version, the exact command and its complete error output. Keep firmware images, private ADB keys and other credentials out of public attachments.
 
-1. **AArch32 Mode**: The RTD2841 has 64-bit Cortex-A53 cores, but Realtek's Android TV firmware runs entirely in 32-bit `armv7l` mode. The model explicitly configures `aarch64=false` and resets into low exception vectors (`reset-hivecs=false`).
-2. **UART Stride**: UART0 registers use standard 16550A offsets but on a 4-byte stride (`shift = 2`) instead of 1-byte, clocked from the 27 MHz crystal oscillator (`baudbase = 1687500`).
-3. **Timer Layout**: TC0..TC7 use flat arrays (`TVR0`..`TVR7` at `0x00`, `CVR0`..`CVR7` at `0x20`, `CR0`..`CR7` at `0x40`) rather than interleaved per-timer structs.
-4. **RPC Interface**: Userland vendor daemons (`rtkd`, `cusd`, `pmoded`) talk via `/dev/rpc*` and `/dev/sys-misc`. IOCTL headers are in `analysis/rtk_rpc_stubs.h`.
+## Verification of this guide
 
----
+Package spellings were checked against the official Homebrew and Ubuntu 24.04 catalogues. Commands, quoting and continuation characters were reviewed for Bash. The macOS source-build and diagnostic results are recorded in the documentation change's verification notes. A fresh Ubuntu installation and Intel Mac run were not performed in this pass; Linux package verification is not being represented as an executed Linux build.
 
 ## License
 
-GPL v2 or later (`GPL-2.0-or-later`), matching QEMU.
+See [LICENSE](LICENSE) and individual source notices. Firmware is not included; its components have separate licensing terms.

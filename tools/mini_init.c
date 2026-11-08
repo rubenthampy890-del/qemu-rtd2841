@@ -778,7 +778,7 @@ static int prop_area_set(void *area, const char *key, const char *val) {
         if (my_strncmp(key, "ro.", 3) == 0) {
             return -1;
         }
-        struct prop_info *info = (struct prop_info *)(data + leaf->prop);
+        info = (struct prop_info *)(data + leaf->prop);
         unsigned int old_serial = info->serial;
         info->serial |= 1;
         my_memory_barrier();
@@ -789,8 +789,10 @@ static int prop_area_set(void *area, const char *key, const char *val) {
     }
 
     hdr->serial++;
-    my_syscall6(240 /* __NR_futex */, (long)&info->serial, 1 /* FUTEX_WAKE */, 0x7fffffff /* INT_MAX */, 0, 0, 0);
-    my_syscall6(240 /* __NR_futex */, (long)&hdr->serial, 1 /* FUTEX_WAKE */, 0x7fffffff /* INT_MAX */, 0, 0, 0);
+    long r_futex1 = my_syscall6(240 /* __NR_futex */, (long)&info->serial, 1 /* FUTEX_WAKE */, 0x7fffffff /* INT_MAX */, 0, 0, 0);
+    long r_futex2 = my_syscall6(240 /* __NR_futex */, (long)&hdr->serial, 1 /* FUTEX_WAKE */, 0x7fffffff /* INT_MAX */, 0, 0, 0);
+    (void)r_futex1;
+    (void)r_futex2;
     return 0;
 }
 
@@ -948,7 +950,7 @@ static void *init_properties_area(void) {
     prop_area_set(area, "ro.secure", "0");
     prop_area_set(area, "ro.adb.secure", "0");
     prop_area_set(area, "persist.sys.usb.config", "adb");
-    prop_area_set(area, "ro.build.type", "userdebug");
+    prop_area_set(area, "ro.build.type", "eng");
     prop_area_set(area, "ro.treble.enabled", "true");
     prop_area_set(area, "ro.vndk.lite", "true");
     prop_area_set(area, "persist.sys.dalvik.vm.lib.2", "libart.so");
@@ -1763,20 +1765,95 @@ static void prepare_android_runtime_dirs(void) {
     my_syscall2(15 /* __NR_chmod */, (long)str_prof_ref, 0771);
 
     static const char str_cpuset[]        = "/dev/cpuset";
+    static const char str_cpuset_tasks[]  = "/dev/cpuset/tasks";
     static const char str_cpuset_fg[]     = "/dev/cpuset/foreground";
-    static const char str_cpuset_tasks[]  = "/dev/cpuset/foreground/tasks";
-    static const char str_root_tasks[]    = "/dev/cpuset/tasks";
+    static const char str_cpuset_fg_t[]   = "/dev/cpuset/foreground/tasks";
+    static const char str_cpuset_bg[]     = "/dev/cpuset/background";
+    static const char str_cpuset_bg_t[]   = "/dev/cpuset/background/tasks";
+    static const char str_cpuset_sysbg[]  = "/dev/cpuset/system-background";
+    static const char str_cpuset_sysbg_t[]= "/dev/cpuset/system-background/tasks";
+    static const char str_cpuset_top[]    = "/dev/cpuset/top-app";
+    static const char str_cpuset_top_t[]  = "/dev/cpuset/top-app/tasks";
+    static const char str_cpuset_res[]    = "/dev/cpuset/restricted";
+    static const char str_cpuset_res_t[]  = "/dev/cpuset/restricted/tasks";
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_cpuset, 0755);
-    my_syscall2(39 /* __NR_mkdir */, (long)str_cpuset_fg, 0755);
-
-    long tfd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_tasks, 0102 /* O_CREAT|O_RDWR */, 0666);
-    if (tfd >= 0) my_syscall1(6 /* __NR_close */, tfd);
+    my_syscall2(39 /* __NR_mkdir */, (long)str_cpuset, 0777);
+    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset, 0777);
+    long fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_tasks, 0102 /* O_CREAT|O_RDWR */, 0666);
+    if (fd >= 0) my_syscall1(6, fd);
     my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_tasks, 0666);
 
-    long rtfd = my_syscall3(5 /* __NR_open */, (long)str_root_tasks, 0102 /* O_CREAT|O_RDWR */, 0666);
-    if (rtfd >= 0) my_syscall1(6 /* __NR_close */, rtfd);
-    my_syscall2(15 /* __NR_chmod */, (long)str_root_tasks, 0666);
+    my_syscall2(39 /* __NR_mkdir */, (long)str_cpuset_fg, 0777);
+    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_fg, 0777);
+    fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_fg_t, 0102 /* O_CREAT|O_RDWR */, 0666);
+    if (fd >= 0) my_syscall1(6, fd);
+    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_fg_t, 0666);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_cpuset_bg, 0777);
+    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_bg, 0777);
+    fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_bg_t, 0102 /* O_CREAT|O_RDWR */, 0666);
+    if (fd >= 0) my_syscall1(6, fd);
+    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_bg_t, 0666);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_cpuset_sysbg, 0777);
+    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_sysbg, 0777);
+    fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_sysbg_t, 0102 /* O_CREAT|O_RDWR */, 0666);
+    if (fd >= 0) my_syscall1(6, fd);
+    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_sysbg_t, 0666);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_cpuset_top, 0777);
+    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_top, 0777);
+    fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_top_t, 0102 /* O_CREAT|O_RDWR */, 0666);
+    if (fd >= 0) my_syscall1(6, fd);
+    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_top_t, 0666);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_cpuset_res, 0777);
+    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_res, 0777);
+    fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_res_t, 0102 /* O_CREAT|O_RDWR */, 0666);
+    if (fd >= 0) my_syscall1(6, fd);
+    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_res_t, 0666);
+
+    /* schedtune / stune hierarchy */
+    static const char str_stune[]         = "/dev/stune";
+    static const char str_stune_tasks[]   = "/dev/stune/tasks";
+    static const char str_stune_fg[]      = "/dev/stune/foreground";
+    static const char str_stune_fg_t[]    = "/dev/stune/foreground/tasks";
+    static const char str_stune_bg[]      = "/dev/stune/background";
+    static const char str_stune_bg_t[]    = "/dev/stune/background/tasks";
+    static const char str_stune_top[]     = "/dev/stune/top-app";
+    static const char str_stune_top_t[]   = "/dev/stune/top-app/tasks";
+    static const char str_stune_rt[]      = "/dev/stune/rt";
+    static const char str_stune_rt_t[]    = "/dev/stune/rt/tasks";
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_stune, 0777);
+    my_syscall2(15 /* __NR_chmod */, (long)str_stune, 0777);
+    fd = my_syscall3(5 /* __NR_open */, (long)str_stune_tasks, 0102 /* O_CREAT|O_RDWR */, 0666);
+    if (fd >= 0) my_syscall1(6, fd);
+    my_syscall2(15 /* __NR_chmod */, (long)str_stune_tasks, 0666);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_stune_fg, 0777);
+    my_syscall2(15 /* __NR_chmod */, (long)str_stune_fg, 0777);
+    fd = my_syscall3(5 /* __NR_open */, (long)str_stune_fg_t, 0102 /* O_CREAT|O_RDWR */, 0666);
+    if (fd >= 0) my_syscall1(6, fd);
+    my_syscall2(15 /* __NR_chmod */, (long)str_stune_fg_t, 0666);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_stune_bg, 0777);
+    my_syscall2(15 /* __NR_chmod */, (long)str_stune_bg, 0777);
+    fd = my_syscall3(5 /* __NR_open */, (long)str_stune_bg_t, 0102 /* O_CREAT|O_RDWR */, 0666);
+    if (fd >= 0) my_syscall1(6, fd);
+    my_syscall2(15 /* __NR_chmod */, (long)str_stune_bg_t, 0666);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_stune_top, 0777);
+    my_syscall2(15 /* __NR_chmod */, (long)str_stune_top, 0777);
+    fd = my_syscall3(5 /* __NR_open */, (long)str_stune_top_t, 0102 /* O_CREAT|O_RDWR */, 0666);
+    if (fd >= 0) my_syscall1(6, fd);
+    my_syscall2(15 /* __NR_chmod */, (long)str_stune_top_t, 0666);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_stune_rt, 0777);
+    my_syscall2(15 /* __NR_chmod */, (long)str_stune_rt, 0777);
+    fd = my_syscall3(5 /* __NR_open */, (long)str_stune_rt_t, 0102 /* O_CREAT|O_RDWR */, 0666);
+    if (fd >= 0) my_syscall1(6, fd);
+    my_syscall2(15 /* __NR_chmod */, (long)str_stune_rt_t, 0666);
 }
 
 static int create_control_socket(const char *path, int type, int mode, int uid, int gid) {
@@ -1844,39 +1921,82 @@ static int spawn_logd(void) {
         return -1;
     }
 
+    /* Set SO_PASSCRED (level 1 SOL_SOCKET, opt 16 SO_PASSCRED) on logdw for SCM_CREDENTIALS */
+    int one = 1;
+    long r_opt = my_syscall5(294 /* __NR_setsockopt */, fd_logdw, 1 /* SOL_SOCKET */, 16 /* SO_PASSCRED */, (long)&one, sizeof(one));
+    if (r_opt != 0) {
+        print_str("[-] WARNING: setsockopt SO_PASSCRED on logdw, rc=");
+        print_dec(r_opt);
+        print_str("\n");
+    }
+
+    /* Open /proc/kmsg and /dev/kmsg to pass as control files ANDROID_FILE__proc_kmsg and ANDROID_FILE__dev_kmsg */
+    static const char str_proc_kmsg[] = "/proc/kmsg";
+    static const char str_dev_kmsg[]  = "/dev/kmsg";
+    long fd_proc_kmsg = my_syscall3(5 /* __NR_open */, (long)str_proc_kmsg, 0 /* O_RDONLY */, 0);
+    long fd_dev_kmsg  = my_syscall3(5 /* __NR_open */, (long)str_dev_kmsg, 1 /* O_WRONLY */, 0);
+    if (fd_dev_kmsg < 0) {
+        my_syscall3(14 /* __NR_mknod */, (long)str_dev_kmsg, 0020666 /* S_IFCHR | 0666 */, (1 << 8) | 11);
+        my_syscall2(15 /* __NR_chmod */, (long)str_dev_kmsg, 0666);
+        fd_dev_kmsg = my_syscall3(5 /* __NR_open */, (long)str_dev_kmsg, 1 /* O_WRONLY */, 0);
+    } else {
+        my_syscall2(15 /* __NR_chmod */, (long)str_dev_kmsg, 0666);
+    }
+
+    print_str("[*] logd fds: logd=");
+    print_dec(fd_logd);
+    print_str(", logdr=");
+    print_dec(fd_logdr);
+    print_str(", logdw=");
+    print_dec(fd_logdw);
+    print_str(", proc_kmsg=");
+    print_dec(fd_proc_kmsg);
+    print_str(", dev_kmsg=");
+    print_dec(fd_dev_kmsg);
+    print_str("\n");
+
     long pid = my_syscall0(2 /* __NR_fork */);
     if (pid < 0) {
         my_syscall1(6, fd_logd); my_syscall1(6, fd_logdr); my_syscall1(6, fd_logdw);
+        if (fd_proc_kmsg >= 0) my_syscall1(6, fd_proc_kmsg);
+        if (fd_dev_kmsg >= 0)  my_syscall1(6, fd_dev_kmsg);
         return (int)pid;
     }
     if (pid == 0) {
         my_syscall2(63 /* __NR_dup2 */, fd_logd, 3);
         my_syscall2(63 /* __NR_dup2 */, fd_logdr, 4);
         my_syscall2(63 /* __NR_dup2 */, fd_logdw, 5);
+        if (fd_proc_kmsg >= 0) my_syscall2(63 /* __NR_dup2 */, fd_proc_kmsg, 6);
+        if (fd_dev_kmsg >= 0)  my_syscall2(63 /* __NR_dup2 */, fd_dev_kmsg, 7);
 
         static const char str_dev_null[] = "/dev/null";
-        long null_fd = my_syscall3(5 /* __NR_open */, (long)str_dev_null, 2 /* O_RDWR */, 0);
-        if (null_fd < 0) {
-            my_syscall3(14 /* __NR_mknod */, (long)str_dev_null, 0020666 /* S_IFCHR | 0666 */, (1 << 8) | 3);
-            my_syscall2(15 /* __NR_chmod */, (long)str_dev_null, 0666);
-            null_fd = my_syscall3(5 /* __NR_open */, (long)str_dev_null, 2 /* O_RDWR */, 0);
-        }
+        long null_fd = my_syscall3(5 /* __NR_open */, (long)str_dev_null, 0 /* O_RDONLY */, 0);
         if (null_fd >= 0) {
             my_syscall2(63 /* __NR_dup2 */, null_fd, 0);
-            my_syscall2(63 /* __NR_dup2 */, null_fd, 1);
-            my_syscall2(63 /* __NR_dup2 */, null_fd, 2);
-            if (null_fd > 2 && null_fd != 3 && null_fd != 4 && null_fd != 5) {
+            if (null_fd > 2 && (null_fd < 3 || null_fd > 7)) {
                 my_syscall1(6 /* __NR_close */, null_fd);
             }
         }
 
-        for (int fd = 6; fd < 1024; fd++) {
+        for (int fd = 8; fd < 1024; fd++) {
             my_syscall1(6 /* __NR_close */, fd);
         }
 
-        /* Set real/effective/saved GID and UID to AID_LOGD (1036) so logd's setuid/setgid calls succeed */
-        my_syscall3(210 /* __NR_setresgid32 */, 1036, 1036, 1036);
-        my_syscall3(208 /* __NR_setresuid32 */, 1036, 1036, 1036);
+        /* Ensure PR_SET_KEEPCAPS and capabilities are set in child before execve */
+        my_syscall5(172 /* __NR_prctl */, 8 /* PR_SET_KEEPCAPS */, 1, 0, 0, 0);
+        struct {
+            unsigned int version;
+            int pid;
+        } cap_hdr = { 0x20080522 /* _LINUX_CAPABILITY_VERSION_3 */, 0 };
+        struct {
+            unsigned int effective;
+            unsigned int permitted;
+            unsigned int inheritable;
+        } cap_data[2] = {
+            { 0xffffffff, 0xffffffff, 0xffffffff },
+            { 0xffffffff, 0xffffffff, 0xffffffff }
+        };
+        my_syscall2(185 /* __NR_capset */, (long)&cap_hdr, (long)cap_data);
 
         static const char str_bin[] = "/system/bin/logd";
         char *const l_argv[] = {(char *)str_bin, 0};
@@ -1889,6 +2009,8 @@ static int spawn_logd(void) {
             "ANDROID_SOCKET_logd=3",
             "ANDROID_SOCKET_logdr=4",
             "ANDROID_SOCKET_logdw=5",
+            "ANDROID_FILE__proc_kmsg=6",
+            "ANDROID_FILE__dev_kmsg=7",
             0
         };
         my_syscall3(11 /* __NR_execve */, (long)str_bin, (long)l_argv, (long)l_envp);
@@ -1897,6 +2019,8 @@ static int spawn_logd(void) {
     my_syscall1(6, fd_logd);
     my_syscall1(6, fd_logdr);
     my_syscall1(6, fd_logdw);
+    if (fd_proc_kmsg >= 0) my_syscall1(6, fd_proc_kmsg);
+    if (fd_dev_kmsg >= 0)  my_syscall1(6, fd_dev_kmsg);
     print_str("[*] logd child spawned, pid=");
     print_dec(pid);
     print_str("\n");
@@ -2362,6 +2486,32 @@ void _start(void) {
     int r_vendor = check_mount(str_vendor_dev, str_vendor_path, str_ext4, 0, 0);
     if (r_vendor == 0) {
         my_syscall3(4, 1, (long)msg_mount_vendor, sizeof(msg_mount_vendor) - 1);
+
+        /* Set up canonical /system mount hierarchy for Android Bionic and Zygote FD whitelist:
+         * Partition 1 is mounted at root '/', but Android 9 Zygote (fd_utils.cpp)
+         * strictly whitelists open bootclasspath jars matching prefix "/system/framework/".
+         * Unlink legacy symlink /system -> '.', create /system mountpoint directory,
+         * and bind-mount '/' onto '/system'. Any file opened via /system/... resolves to that prefix.
+         */
+        static const char str_system_path[] = "/system";
+        static const char str_root_path[]   = "/";
+        long r_un = my_syscall1(10 /* __NR_unlink */, (long)str_system_path);
+        if (r_un != -21 /* -EISDIR */) {
+            my_syscall2(39 /* __NR_mkdir */, (long)str_system_path, 0755);
+        }
+        long r_sys_bind = my_syscall5(21 /* __NR_mount */, (long)str_root_path, (long)str_system_path, 0, 4096 /* MS_BIND */, 0);
+        if (r_sys_bind == 0) {
+            print_str("[+] Bound rootfs onto /system for Zygote path whitelist\n");
+        } else {
+            print_str("[-] WARNING: Failed to bind-mount / onto /system, rc=");
+            print_dec(r_sys_bind);
+            print_str("\n");
+        }
+
+        /* Bind /vendor onto /system/vendor */
+        static const char str_sys_vendor[] = "/system/vendor";
+        my_syscall2(39 /* __NR_mkdir */, (long)str_sys_vendor, 0755);
+        my_syscall5(21 /* __NR_mount */, (long)str_vendor_path, (long)str_sys_vendor, 0, 4096 /* MS_BIND */, 0);
 
         /* Load genuine precompiled SELinux policy from vendor partition */
         load_selinux_policy();

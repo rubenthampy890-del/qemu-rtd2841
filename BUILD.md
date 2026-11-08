@@ -1,5 +1,11 @@
 # Build and run OpenDTV
 
-For a fresh macOS or Ubuntu computer, follow [Run it on a new computer](README.md#run-it-on-a-new-computer). It contains the pinned QEMU revision, dependencies, patch application, test payload build, device-tree build, and verification commands in execution order.
+Follow the numbered steps in [README.md](README.md#1-install-the-host-tools).
+They cover macOS and Ubuntu 24.04 dependencies, the pinned QEMU source,
+patch application, ARM diagnostic compilation, tests, the display window,
+and returning to an existing build.
 
-The public repository supports the bare-metal diagnostic and synthetic storage tests. Linux firmware boot additionally requires a compatible local kernel and eMMC image; the README lists those inputs and the overlay-based test command.
+The public build runs hardware diagnostics without firmware. The
+[Android and kernel development section](README.md#android-and-kernel-development)
+explains the additional inputs and the current limits of reproducing the
+Android research image. A successful hardware test is not an Android boot.

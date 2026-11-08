@@ -3,15 +3,15 @@
   "target": "RTD2841 / TCL RT41 Chassis (tv030)",
   "kernel_sha256": "5e5b5a34288c5a7264d365213d3ba0205ac8d7ccd547a0f9c264e6ab27723f4a",
   "dtb_sha256": "c6207eb82fb84a9b089ed7ac10186d89ac430657166a21a1cf326b4d9ed4d5ea",
-  "init_sha256": "73e69287d9d9444bf05450892762f361e77b8eae9ca27d3e38c691b6ad69acbb",
-  "su_sha256": "9ef72fa0055244498d80e68c3c6a849e2cb02fe4afb6efcb6f4eaee4db85f02c",
-  "gles_sha256": "f253b587649b661cf5ac61b1875e2bf1f4b82eb99d8e1463b916935a0f61959c",
+  "init_sha256": "c697dfdb2e99ca97dc121937c951b65c328b9a0a75005333df81ce7633618b19",
+  "su_sha256": "020ef66e5b522bd6a3c32860445773dee0c2ba394f95a6370f5fa604dbf7c426",
+  "gles_sha256": "e3d1fb478cf75015780f392c8331b8cc1cea03551e8a6fef40e436a8f4e93111",
   "disk_sha256_before": "ad59842d0986c38b8fa3a1746daf51457ba971e11de4d14c2488628f3fb1f4a8",
   "disk_sha256_after": "ad59842d0986c38b8fa3a1746daf51457ba971e11de4d14c2488628f3fb1f4a8",
   "disk_immutability_verified": true,
   "boot1_result": {
-    "elapsed_seconds": 17.9,
-    "canary_token_1_written": "BOOT1_2f06d18dc9ef4fbe"
+    "elapsed_seconds": 17.7,
+    "canary_token_1_written": "BOOT1_bec7119b83654072"
   },
   "boot2_result": {
     "success": true,
@@ -41,8 +41,8 @@
   "boot3_result": {
     "success": true,
     "cumulative_tokens": [
-      "BOOT1_2f06d18dc9ef4fbe",
-      "BOOT2_37b5c7152f174ddc"
+      "BOOT1_bec7119b83654072",
+      "BOOT2_ffde231bd2314f27"
     ],
     "has_token_1": true,
     "has_token_2": true,
