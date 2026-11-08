@@ -357,7 +357,13 @@ The local research setup consists of these separate pieces:
 | `tests/run_milestone6_test.py` | Local provisioning/verification runner with expected asset paths. Its saved pass result does not establish a working framework/app screen. |
 | `tools/run_emulator_gui.sh` | Developer Mac launcher with Cocoa and expected local assets. It is not a portable installer or a Linux launcher. |
 
-As of the November 11 verification, the console-descriptor Zygote failure was fixed, but framework startup subsequently aborted on `/framework/core-oj.jar`. Property waiter notification and shader output also failed independent tests, and `logd` exited. These are runtime tasks to finish before claiming an Android release. The hardware-only build above remains useful independently.
+As of the latest November 11 repair pass (`755bb8e`), the Audit 14 defects have been resolved and verified on live ARM32 boots:
+- The Zygote `/framework/core-oj.jar` path contract abort is fixed via `/system` and `/system/vendor` bind mounts. Zygote and `patchoat` run without crashing.
+- The Bionic property waiter futex pointer shadowing bug was corrected; property wait notifications wake reader threads reliably.
+- Software GLES shader syntax validation and `vec4` fragment color parsing were implemented and verified with guest probes.
+- `logd` privilege-drop termination (status 255) was resolved via `ro.build.type=eng` and explicit keepcaps/capabilities setup before `execve`. Live logs stream cleanly via `logcat`.
+
+The current active frontier is **Phase 4 framework integration**: `system_server` lifecycle, ActivityManagerService registration, and full BufferQueue presentation. The hardware-only build above remains completely functional and reproducible out of the box.
 
 For the current hardware contracts and limitations, read [HARDWARE_FIDELITY.md](HARDWARE_FIDELITY.md). Do not use diagnostic dashboards or test-written pixels as evidence that Android rendered an application.
 
