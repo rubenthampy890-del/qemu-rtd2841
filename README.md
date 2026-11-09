@@ -7,16 +7,11 @@ OpenDTV is an open-source QEMU system emulator for the **Realtek RTD2841 / RTK28
 
 ---
 
-## Project Status & Roadmap
+## Emulated Capabilities
 
-| Phase | Milestone Description | Status | What Works |
-|---|---|---|---|
-| **Phase 1** | Firmware & Partition Extraction | **Complete** | Full GPT eMMC layout mapped (system, vendor, data partitions). |
-| **Phase 2** | Core Silicon & Linux 4.4 Kernel | **Complete** | GICv2 (256 INTIDs), Realtek TC0 27 MHz monotonic timer, SDHCI eMMC, RTL8168 Ethernet, SMP 4-core Linux boot. |
-| **Phase 3** | Android 9 Pie Userspace | **Complete** | Custom static PID 1 (`mini_init`), Bionic properties trie with futex wakes, all 3 Treble Binder domains (`servicemanager`, `hwservicemanager`, `vndservicemanager`), live `Zygote` & `patchoat`, `logd` (`logcat`), SurfaceFlinger, and persistent `/data`. |
-| **Phase 4** | Framework Services & Interactive UI | **Active** | `system_server` lifecycle, ActivityManagerService, BufferQueue layer presentation, and TV remote navigation. |
-| **Phase 5** | Multimedia & Hardware Decoders | Planned | VPU video decoding, AudioFlinger ALSA audio routing. |
-| **Phase 6** | Upstream QEMU Submission | Planned | Upstream patch submission to QEMU mainline. |
+- **Hardware Silicon**: Quad-core Cortex-A53 in ARM32 (AArch32) mode, GICv2 interrupt distributor (256 INTIDs), Realtek TC0 27 MHz monotonic timer, SDHCI eMMC controller, and RTL8168 Ethernet via QEMU SLIRP.
+- **Linux 4.4 Kernel**: Full 4-core SMP boot, ext4 rootfs and vendor partition mounting, and DHCP networking.
+- **Android 9 Pie Userspace**: Custom static PID 1 (`mini_init`), Bionic property trie with futex notifications, all three Project Treble Binder domains (`servicemanager`, `hwservicemanager`, `vndservicemanager`), live ART/Zygote runtime, `logd` logging with `logcat`, SurfaceFlinger composition, and persistent `/data` storage.
 
 ---
 
@@ -119,7 +114,7 @@ To open the emulator window and verify 1080p display output:
 
 ---
 
-## Running Android 9 Pie Userspace (Phase 3)
+## Running the Android 9 Pie Userspace
 
 If you have compatible firmware assets (`staging/emmc.raw` and a patched `zImage`), you can launch the complete Android userspace with a single command:
 
