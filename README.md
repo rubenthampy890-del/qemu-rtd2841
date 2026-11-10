@@ -116,7 +116,33 @@ To open the emulator window and verify 1080p display output:
 
 ## Running the Android 9 Pie Userspace
 
-If you have compatible firmware assets (`staging/emmc.raw` and a patched `zImage`), you can launch the complete Android userspace with a single command:
+To boot the full Android 9 Pie TV environment, you will need two components: the Linux kernel (`zImage`) and the TV storage image (`staging/emmc.raw`).
+
+### 1. Vendor Kernel Source & Compiling `zImage` (GPLv2)
+
+The Linux 4.4 kernel source code for the Realtek RTD2841 / RTK284x SoC is open-source under GPLv2 and publicly maintained by TCL:
+
+- **Vendor Kernel Repository**: [TCLOpenSource/rtk2841](https://github.com/TCLOpenSource/rtk2841)
+- **TCL Kernel Release Index**: [TCLOpenSource/TCL_Kernel_OpenSource](https://github.com/TCLOpenSource/TCL_Kernel_OpenSource)
+
+You can clone the vendor kernel and compile the patched `zImage` using our automated build script and kernel patch (`patches/linux-4.4.3-rtd2841-qemu.patch`):
+
+```bash
+# 1. Clone TCL's GPLv2 vendor kernel source
+git clone --depth 1 https://github.com/TCLOpenSource/rtk2841.git kernel/rtk2841
+
+# 2. Build the patched ARM32 zImage
+./scripts/build_kernel.sh
+```
+
+### 2. Proprietary TV Firmware (Bring Your Own Firmware)
+
+> [!IMPORTANT]
+> The Android system (`/system`), vendor (`/vendor`), and boot partitions contain proprietary, copyrighted software and binaries from TCL, Realtek, and Google. In strict compliance with copyright law, **no proprietary firmware blobs or disk images are packaged or distributed with this repository**.
+
+Users must supply their own firmware dump (`staging/emmc.raw`) extracted from their own physical TCL RT41 / RTD2841 hardware (board profile `tv030`) or legitimate OEM recovery packages (such as `V8-R41KT01-LF1V...`).
+
+Once you place your extracted `emmc.raw` in the `staging/` directory:
 
 ```bash
 ./tools/run_emulator_gui.sh -m android
