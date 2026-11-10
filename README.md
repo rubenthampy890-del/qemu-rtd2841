@@ -31,13 +31,32 @@ export PYTHON="$(brew --prefix python@3.14)/bin/python3.14"
 export OPENDTV_DISPLAY=cocoa
 ```
 
-#### Ubuntu 24.04 LTS
+#### Debian / Ubuntu / Kali Linux (APT)
 ```bash
 sudo apt update
 sudo apt install -y build-essential git ninja-build pkg-config \
     libglib2.0-dev libpixman-1-dev libslirp-dev libfdt-dev zlib1g-dev \
     libgtk-3-dev device-tree-compiler python3 python3-venv \
     binutils-arm-none-eabi ca-certificates
+export PYTHON=python3
+export OPENDTV_DISPLAY=gtk
+```
+
+#### Fedora / RHEL / CentOS Stream (DNF)
+```bash
+sudo dnf install -y gcc gcc-c++ git ninja-build pkgconf-pkg-config \
+    glib2-devel pixman-devel libslirp-devel libfdt-devel zlib-devel \
+    gtk3-devel dtc python3 python3-devel \
+    arm-none-eabi-binutils-cs ca-certificates
+export PYTHON=python3
+export OPENDTV_DISPLAY=gtk
+```
+
+#### Arch Linux / Manjaro (Pacman)
+```bash
+sudo pacman -Syu --needed base-devel git ninja pkgconf \
+    glib2 pixman libslirp dtc zlib gtk3 python \
+    arm-none-eabi-binutils ca-certificates
 export PYTHON=python3
 export OPENDTV_DISPLAY=gtk
 ```
@@ -200,7 +219,7 @@ qemu-rtd2841/
 | `main directory cannot contain spaces nor colons` | QEMU build path has spaces | Move the repository to a simple path like `~/qemu-rtd2841`. |
 | `patch does not apply` | QEMU source is not clean | Ensure you checked out exact commit `a19f59a72d96056d9a8f48cf6c77f5787491e414`. |
 | `ninja: build stopped: subcommand failed` | Host ran out of RAM | Run `ninja -j2 qemu-system-aarch64 qemu-img` to limit concurrent compiler jobs. |
-| `Display 'cocoa'/'gtk' not available` | Mismatched display backend | On macOS use `--enable-cocoa`; on Ubuntu use `--enable-gtk`. |
+| `Display 'cocoa'/'gtk' not available` | Mismatched display backend | On macOS use `--enable-cocoa`; on Linux use `--enable-gtk`. |
 | Tier 3 skipped in `run_ci_test.py` | Expected behavior on fresh clone | Tier 3 tests the proprietary Linux/firmware disk; Tier 1 and 2 verify the public silicon model. |
 
 ---
