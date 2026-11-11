@@ -35,6 +35,7 @@ import threading
 import shutil
 import time
 import uuid
+from android_readiness import framework_ready
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -692,8 +693,10 @@ def main():
             # 3. Check Android properties and services
             p_model = subprocess.run([str(ADB), "-s", target, "shell", "getprop ro.product.model"], capture_output=True, text=True).stdout.strip()
             p_sdk = subprocess.run([str(ADB), "-s", target, "shell", "getprop ro.build.version.sdk"], capture_output=True, text=True).stdout.strip()
-            p_hwsm = subprocess.run([str(ADB), "-s", target, "shell", "getprop hwservicemanager.ready"], capture_output=True, text=True).stdout.strip()
-            p_boot_completed = subprocess.run([str(ADB), "-s", target, "shell", "getprop sys.boot_completed"], capture_output=True, text=True).stdout.strip()
+            p_hwsm_result = subprocess.run([str(ADB), "-s", target, "shell", "getprop hwservicemanager.ready"], capture_output=True, text=True, timeout=10)
+            p_hwsm = p_hwsm_result.stdout.strip()
+            p_boot_completed_result = subprocess.run([str(ADB), "-s", target, "shell", "getprop sys.boot_completed"], capture_output=True, text=True, timeout=10)
+            p_boot_completed = p_boot_completed_result.stdout.strip()
 
             sf_registered = False
             for _ in range(15):
@@ -724,10 +727,18 @@ def main():
             zygote_running = zygote_alive and zygote_socket_ok
 
             # Framework progress check
-            services_list = subprocess.run([str(ADB), "-s", target, "shell", "service list"], capture_output=True, text=True).stdout
-            framework_progress_ok = (p_boot_completed == "1") or (
-                "SurfaceFlinger" in services_list and "installd" in services_list and p_hwsm == "true"
+            services_result = subprocess.run(
+                [str(ADB), "-s", target, "shell", "service list"],
+                capture_output=True, text=True, timeout=10,
             )
+            framework_progress_ok = framework_ready(
+                p_boot_completed_result, p_hwsm_result, services_result,
+            )
+            if not framework_progress_ok:
+                print("[-] Android framework is not ready: "
+                      f"boot_completed={p_boot_completed!r}, "
+                      f"hwsm_ready={p_hwsm!r}, "
+                      f"probe_rcs={[p_boot_completed_result.returncode, p_hwsm_result.returncode, services_result.returncode]}")
 
             # Framebuffer visual verification: ensure non-zero pixel content via hardware test_fbdev_hwc probe
             fb_non_zero_bytes = check_framebuffer_pixels([str(ADB)], target)
@@ -847,8 +858,10 @@ def main():
             # 2. Check Android properties and services
             p_model = subprocess.run([str(ADB), "-s", target, "shell", "getprop ro.product.model"], capture_output=True, text=True).stdout.strip()
             p_sdk = subprocess.run([str(ADB), "-s", target, "shell", "getprop ro.build.version.sdk"], capture_output=True, text=True).stdout.strip()
-            p_hwsm = subprocess.run([str(ADB), "-s", target, "shell", "getprop hwservicemanager.ready"], capture_output=True, text=True).stdout.strip()
-            p_boot_completed = subprocess.run([str(ADB), "-s", target, "shell", "getprop sys.boot_completed"], capture_output=True, text=True).stdout.strip()
+            p_hwsm_result = subprocess.run([str(ADB), "-s", target, "shell", "getprop hwservicemanager.ready"], capture_output=True, text=True, timeout=10)
+            p_hwsm = p_hwsm_result.stdout.strip()
+            p_boot_completed_result = subprocess.run([str(ADB), "-s", target, "shell", "getprop sys.boot_completed"], capture_output=True, text=True, timeout=10)
+            p_boot_completed = p_boot_completed_result.stdout.strip()
 
             sf_registered = False
             for _ in range(15):
@@ -879,10 +892,18 @@ def main():
             zygote_running = zygote_alive and zygote_socket_ok
 
             # Framework progress check
-            services_list = subprocess.run([str(ADB), "-s", target, "shell", "service list"], capture_output=True, text=True).stdout
-            framework_progress_ok = (p_boot_completed == "1") or (
-                "SurfaceFlinger" in services_list and "installd" in services_list and p_hwsm == "true"
+            services_result = subprocess.run(
+                [str(ADB), "-s", target, "shell", "service list"],
+                capture_output=True, text=True, timeout=10,
             )
+            framework_progress_ok = framework_ready(
+                p_boot_completed_result, p_hwsm_result, services_result,
+            )
+            if not framework_progress_ok:
+                print("[-] Android framework is not ready: "
+                      f"boot_completed={p_boot_completed!r}, "
+                      f"hwsm_ready={p_hwsm!r}, "
+                      f"probe_rcs={[p_boot_completed_result.returncode, p_hwsm_result.returncode, services_result.returncode]}")
 
             # Framebuffer visual verification: ensure non-zero pixel content via hardware test_fbdev_hwc probe
             fb_non_zero_bytes = check_framebuffer_pixels([str(ADB)], target)
