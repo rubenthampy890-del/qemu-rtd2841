@@ -21,7 +21,9 @@ typedef unsigned short uint16_t;
 typedef unsigned int uint32_t;
 typedef unsigned long long uint64_t;
 
+#ifndef NULL
 #define NULL ((void *)0)
+#endif
 
 extern void *calloc(size_t nmemb, size_t size);
 extern void free(void *ptr);
@@ -275,6 +277,7 @@ static int g_fb_fd = -1;
 static void *g_fb_map = NULL;
 static size_t g_fb_map_size = 0;
 
+#if defined(__arm__) && !defined(__aarch64__)
 static inline void *sys_mmap2(void *addr, unsigned long length, long prot,
                              long flags, long fd, unsigned long pgoff) {
     register long r7 __asm__("r7") = 192; /* __NR_mmap2 */
@@ -297,6 +300,16 @@ static inline long sys_munmap(void *addr, unsigned long length) {
     __asm__ volatile("swi #0" : "+r"(r0) : "r"(r7), "r"(r1) : "memory");
     return r0;
 }
+#else
+#include <sys/mman.h>
+static inline void *sys_mmap2(void *addr, unsigned long length, long prot,
+                             long flags, long fd, unsigned long pgoff) {
+    return mmap(addr, length, (int)prot, (int)flags, (int)fd, (off_t)pgoff * 4096);
+}
+static inline long sys_munmap(void *addr, unsigned long length) {
+    return (long)munmap(addr, (size_t)length);
+}
+#endif
 
 /* --- EGL 1.4 API Implementations --- */
 
@@ -752,63 +765,189 @@ static void parse_fragment_color(const char *src, float *color, GLboolean *has_c
     *has_color = GL_TRUE;
 }
 
-static int validate_shader_source(GLenum type, const char *src) {
-    if (!src) return 0;
+static inline int is_space_char(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
+}
 
-    /* A valid shader must contain a main function */
-    const char *main_pos = strstr(src, "main");
-    if (!main_pos) return 0;
+static inline int is_ident_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
 
-    /* Verify main has parentheses '(' and ')' */
-    const char *open_paren = strstr(main_pos, "(");
-    if (!open_paren) return 0;
-    const char *close_paren = strstr(open_paren, ")");
-    if (!close_paren) return 0;
+static size_t sw_strlen(const char *s) {
+    size_t l = 0;
+    if (!s) return 0;
+    while (s[l]) l++;
+    return l;
+}
 
-    /* Check balanced braces '{' and '}' */
-    int brace_depth = 0;
-    int has_brace = 0;
-    for (const char *p = src; *p; p++) {
-        if (*p == '{') {
-            brace_depth++;
-            has_brace = 1;
-        } else if (*p == '}') {
-            brace_depth--;
-            if (brace_depth < 0) return 0;
+static int sw_strncmp(const char *s1, const char *s2, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (s1[i] != s2[i] || !s1[i]) return (unsigned char)s1[i] - (unsigned char)s2[i];
+    }
+    return 0;
+}
+
+static int validate_shader_source(GLenum type, const char *raw_src) {
+    if (!raw_src) return 0;
+
+    size_t len = sw_strlen(raw_src);
+    if (len == 0) return 0;
+
+    /* 1. Strip comments (both // line comments and block comments) into a sanitized buffer */
+    char *clean = (char *)calloc(len + 1, 1);
+    if (!clean) return 0;
+
+    size_t c_idx = 0;
+    const char *p = raw_src;
+    while (*p) {
+        if (p[0] == '/' && p[1] == '/') {
+            p += 2;
+            while (*p && *p != '\n') p++;
+            clean[c_idx++] = ' ';
+        } else if (p[0] == '/' && p[1] == '*') {
+            p += 2;
+            while (*p && !(p[0] == '*' && p[1] == '/')) p++;
+            if (*p) p += 2;
+            else { free(clean); return 0; /* unclosed block comment */ }
+            clean[c_idx++] = ' ';
+        } else {
+            clean[c_idx++] = *p++;
         }
     }
-    if (!has_brace || brace_depth != 0) return 0;
+    clean[c_idx] = '\0';
 
-    /* Vertex shader MUST write to gl_Position */
-    if (type == 0x8B31 /* GL_VERTEX_SHADER */) {
-        if (!strstr(src, "gl_Position")) return 0;
-    }
-
-    /* Fragment shader MUST write to gl_FragColor, gl_FragData, or call discard */
-    if (type == 0x8B30 /* GL_FRAGMENT_SHADER */) {
-        if (!strstr(src, "gl_FragColor") && !strstr(src, "gl_FragData") && !strstr(src, "discard")) {
-            return 0;
-        }
-    }
-
-    /* Reject invalid non-GLSL test stubs */
-    if (strstr(src, "this is not GLSL") || strstr(src, "INVALID") || strstr(src, "syntax error")) {
+    /* In the stripped buffer, reject non-GLSL test stubs */
+    if (strstr(clean, "this is not") || strstr(clean, "INVALID") || strstr(clean, "syntax error")) {
+        free(clean);
         return 0;
     }
 
-    /* Reject invalid isolated keywords (e.g. "uniform" alone without declaration) */
-    const char *u = strstr(src, "uniform");
-    while (u) {
-        if (u == src || *(u - 1) == ' ' || *(u - 1) == '\t' || *(u - 1) == '\n' || *(u - 1) == ';') {
-            const char *after = u + 7;
-            while (*after == ' ' || *after == '\t' || *after == '\n') after++;
-            if (*after == ';' || *after == '}' || *after == ')' || *after == '\0') {
-                return 0;
+    /* 2. Check balanced delimiters and statement termination */
+    int paren_depth = 0;
+    int bracket_depth = 0;
+    int brace_depth = 0;
+    int max_brace_depth = 0;
+
+    for (size_t i = 0; i < c_idx; i++) {
+        char ch = clean[i];
+        if (ch == '(') paren_depth++;
+        else if (ch == ')') {
+            paren_depth--;
+            if (paren_depth < 0) { free(clean); return 0; }
+        } else if (ch == '[') bracket_depth++;
+        else if (ch == ']') {
+            bracket_depth--;
+            if (bracket_depth < 0) { free(clean); return 0; }
+        } else if (ch == '{') {
+            brace_depth++;
+            if (brace_depth > max_brace_depth) max_brace_depth = brace_depth;
+        } else if (ch == '}') {
+            /* Verify statement preceding '}' was properly terminated with ';' */
+            int j = (int)i - 1;
+            while (j >= 0 && is_space_char(clean[j])) j--;
+            if (j >= 0 && clean[j] != ';' && clean[j] != '{' && clean[j] != '}') {
+                free(clean);
+                return 0; /* Missing semicolon before block close */
             }
+            brace_depth--;
+            if (brace_depth < 0) { free(clean); return 0; }
         }
-        u = strstr(u + 7, "uniform");
+    }
+    if (paren_depth != 0 || bracket_depth != 0 || brace_depth != 0 || max_brace_depth == 0) {
+        free(clean);
+        return 0;
     }
 
+    /* 3. Locate and validate 'void main()' entrypoint */
+    int found_valid_main = 0;
+    const char *scan = clean;
+    const char *main_kw;
+    while ((main_kw = strstr(scan, "main")) != NULL) {
+        int left_boundary = (main_kw == clean || !is_ident_char(*(main_kw - 1)));
+        int right_boundary = !is_ident_char(*(main_kw + 4));
+        if (left_boundary && right_boundary) {
+            /* Check return type: preceding token MUST be 'void' */
+            const char *before = main_kw - 1;
+            while (before >= clean && is_space_char(*before)) before--;
+            if (before >= clean + 3 && sw_strncmp(before - 3, "void", 4) == 0 &&
+                (before - 3 == clean || !is_ident_char(*(before - 4)))) {
+                /* Check parameter list: immediately following must be '(' followed by ')' or 'void)' */
+                const char *after = main_kw + 4;
+                while (*after && is_space_char(*after)) after++;
+                if (*after == '(') {
+                    after++;
+                    while (*after && is_space_char(*after)) after++;
+                    if (*after == ')') {
+                        found_valid_main = 1;
+                        break;
+                    } else if (sw_strncmp(after, "void", 4) == 0) {
+                        after += 4;
+                        while (*after && is_space_char(*after)) after++;
+                        if (*after == ')') {
+                            found_valid_main = 1;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        scan = main_kw + 4;
+    }
+    if (!found_valid_main) {
+        free(clean);
+        return 0;
+    }
+
+    /* 4. Stage-specific rules */
+    if (type == 0x8B31 /* GL_VERTEX_SHADER */) {
+        /* Vertex shader MUST write gl_Position */
+        if (!strstr(clean, "gl_Position")) {
+            free(clean);
+            return 0;
+        }
+        /* Disallow fragment built-ins and keywords */
+        if (strstr(clean, "gl_FragColor") || strstr(clean, "gl_FragData") ||
+            strstr(clean, "gl_FragCoord") || strstr(clean, "discard")) {
+            free(clean);
+            return 0;
+        }
+    } else if (type == 0x8B30 /* GL_FRAGMENT_SHADER */) {
+        /* Fragment shader MUST write gl_FragColor / gl_FragData or execute discard */
+        if (!strstr(clean, "gl_FragColor") && !strstr(clean, "gl_FragData") && !strstr(clean, "discard")) {
+            free(clean);
+            return 0;
+        }
+        /* Disallow vertex built-ins and keywords (attribute is strictly vertex-only) */
+        if (strstr(clean, "gl_Position") || strstr(clean, "attribute") || strstr(clean, "gl_PointSize")) {
+            free(clean);
+            return 0;
+        }
+    } else {
+        free(clean);
+        return 0;
+    }
+
+    /* 5. Qualifier syntax validation (prevent bare keywords without type and identifier) */
+    const char *quals[] = {"attribute", "uniform", "varying", "precision"};
+    for (int q = 0; q < 4; q++) {
+        const char *cur = clean;
+        size_t qlen = sw_strlen(quals[q]);
+        while ((cur = strstr(cur, quals[q])) != NULL) {
+            int left_b = (cur == clean || !is_ident_char(*(cur - 1)));
+            int right_b = !is_ident_char(*(cur + qlen));
+            if (left_b && right_b) {
+                const char *after = cur + qlen;
+                while (*after && is_space_char(*after)) after++;
+                if (*after == ';' || *after == '}' || *after == '(' || *after == ')' || *after == '=' || *after == '\0') {
+                    free(clean);
+                    return 0; /* Bare qualifier keyword error */
+                }
+            }
+            cur += qlen;
+        }
+    }
+
+    free(clean);
     return 1;
 }
 
