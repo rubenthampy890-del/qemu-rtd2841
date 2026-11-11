@@ -1,4 +1,4 @@
-# Build and run OpenDTV
+# Build and run Realtek RTD2841 QEMU Model
 
 Follow the numbered steps in [README.md](README.md#1-install-the-host-tools).
 They cover macOS and Ubuntu 24.04 dependencies, the pinned QEMU source,

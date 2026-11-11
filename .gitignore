@@ -7,7 +7,7 @@ build/
 staging/
 output/
 artifacts/
-docs/phase3/
+/docs/
 /AGENTS.md
 /codex.md
 /engineering_doctrine.md
