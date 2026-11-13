@@ -52,3 +52,11 @@ not included. A pass covers only the tiers actually executed. See the
 [prepared-asset instructions](../README.md#linux-verification-with-already-prepared-assets)
 for required inputs and strict mode. The color-bar display has its own
 [launch command](../README.md#5-open-the-display-window).
+
+## Shader and Android readiness regression tests
+
+The firmware-independent shader suite builds a real GLSL compiler frontend.
+Follow [the compiler setup instructions](../tools/SHADER_COMPILER.md) before
+running `python3 tests/test_shader_validation.py`. It checks compilation, not
+shader execution or Android boot completion. The readiness predicate tests run
+with `PYTHONPATH=tests python3 -m unittest tests/test_android_readiness.py`.

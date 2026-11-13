@@ -2,9 +2,9 @@
  * OpenDTV Software Compatibility EGL 1.4 & OpenGL ES 2.0 Driver
  * Target: ARM32 Android 9 Pie (EABI5)
  *
- * Implements the standard EGL 1.4 and OpenGL ES 2.0 specification contracts
- * required by Android 9 SurfaceFlinger RenderEngine without relying on
- * proprietary Mali or hardware GPU ioctls.
+ * Experimental compatibility renderer for Android bring-up without Mali.
+ * A real GLSL frontend validates shaders; the rendering backend is still
+ * limited and is not a conformant general-purpose GLES implementation.
  */
 
 #if defined(__arm__) || defined(__i386__)
@@ -201,6 +201,7 @@ typedef struct {
     GLenum type;
     GLboolean compiled;
     char *source;
+    char info_log[1024];
     GLboolean has_color;
     float color[4];
 } SwShader;
@@ -765,191 +766,10 @@ static void parse_fragment_color(const char *src, float *color, GLboolean *has_c
     *has_color = GL_TRUE;
 }
 
-static inline int is_space_char(char c) {
-    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
-}
-
-static inline int is_ident_char(char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
-}
-
-static size_t sw_strlen(const char *s) {
-    size_t l = 0;
-    if (!s) return 0;
-    while (s[l]) l++;
-    return l;
-}
-
-static int sw_strncmp(const char *s1, const char *s2, size_t n) {
-    for (size_t i = 0; i < n; i++) {
-        if (s1[i] != s2[i] || !s1[i]) return (unsigned char)s1[i] - (unsigned char)s2[i];
-    }
-    return 0;
-}
-
-static int validate_shader_source(GLenum type, const char *raw_src) {
-    if (!raw_src) return 0;
-
-    size_t len = sw_strlen(raw_src);
-    if (len == 0) return 0;
-
-    /* 1. Strip comments (both // line comments and block comments) into a sanitized buffer */
-    char *clean = (char *)calloc(len + 1, 1);
-    if (!clean) return 0;
-
-    size_t c_idx = 0;
-    const char *p = raw_src;
-    while (*p) {
-        if (p[0] == '/' && p[1] == '/') {
-            p += 2;
-            while (*p && *p != '\n') p++;
-            clean[c_idx++] = ' ';
-        } else if (p[0] == '/' && p[1] == '*') {
-            p += 2;
-            while (*p && !(p[0] == '*' && p[1] == '/')) p++;
-            if (*p) p += 2;
-            else { free(clean); return 0; /* unclosed block comment */ }
-            clean[c_idx++] = ' ';
-        } else {
-            clean[c_idx++] = *p++;
-        }
-    }
-    clean[c_idx] = '\0';
-
-    /* In the stripped buffer, reject non-GLSL test stubs */
-    if (strstr(clean, "this is not") || strstr(clean, "INVALID") || strstr(clean, "syntax error")) {
-        free(clean);
-        return 0;
-    }
-
-    /* 2. Check balanced delimiters and statement termination */
-    int paren_depth = 0;
-    int bracket_depth = 0;
-    int brace_depth = 0;
-    int max_brace_depth = 0;
-
-    for (size_t i = 0; i < c_idx; i++) {
-        char ch = clean[i];
-        if (ch == '(') paren_depth++;
-        else if (ch == ')') {
-            paren_depth--;
-            if (paren_depth < 0) { free(clean); return 0; }
-        } else if (ch == '[') bracket_depth++;
-        else if (ch == ']') {
-            bracket_depth--;
-            if (bracket_depth < 0) { free(clean); return 0; }
-        } else if (ch == '{') {
-            brace_depth++;
-            if (brace_depth > max_brace_depth) max_brace_depth = brace_depth;
-        } else if (ch == '}') {
-            /* Verify statement preceding '}' was properly terminated with ';' */
-            int j = (int)i - 1;
-            while (j >= 0 && is_space_char(clean[j])) j--;
-            if (j >= 0 && clean[j] != ';' && clean[j] != '{' && clean[j] != '}') {
-                free(clean);
-                return 0; /* Missing semicolon before block close */
-            }
-            brace_depth--;
-            if (brace_depth < 0) { free(clean); return 0; }
-        }
-    }
-    if (paren_depth != 0 || bracket_depth != 0 || brace_depth != 0 || max_brace_depth == 0) {
-        free(clean);
-        return 0;
-    }
-
-    /* 3. Locate and validate 'void main()' entrypoint */
-    int found_valid_main = 0;
-    const char *scan = clean;
-    const char *main_kw;
-    while ((main_kw = strstr(scan, "main")) != NULL) {
-        int left_boundary = (main_kw == clean || !is_ident_char(*(main_kw - 1)));
-        int right_boundary = !is_ident_char(*(main_kw + 4));
-        if (left_boundary && right_boundary) {
-            /* Check return type: preceding token MUST be 'void' */
-            const char *before = main_kw - 1;
-            while (before >= clean && is_space_char(*before)) before--;
-            if (before >= clean + 3 && sw_strncmp(before - 3, "void", 4) == 0 &&
-                (before - 3 == clean || !is_ident_char(*(before - 4)))) {
-                /* Check parameter list: immediately following must be '(' followed by ')' or 'void)' */
-                const char *after = main_kw + 4;
-                while (*after && is_space_char(*after)) after++;
-                if (*after == '(') {
-                    after++;
-                    while (*after && is_space_char(*after)) after++;
-                    if (*after == ')') {
-                        found_valid_main = 1;
-                        break;
-                    } else if (sw_strncmp(after, "void", 4) == 0) {
-                        after += 4;
-                        while (*after && is_space_char(*after)) after++;
-                        if (*after == ')') {
-                            found_valid_main = 1;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        scan = main_kw + 4;
-    }
-    if (!found_valid_main) {
-        free(clean);
-        return 0;
-    }
-
-    /* 4. Stage-specific rules */
-    if (type == 0x8B31 /* GL_VERTEX_SHADER */) {
-        /* Vertex shader MUST write gl_Position */
-        if (!strstr(clean, "gl_Position")) {
-            free(clean);
-            return 0;
-        }
-        /* Disallow fragment built-ins and keywords */
-        if (strstr(clean, "gl_FragColor") || strstr(clean, "gl_FragData") ||
-            strstr(clean, "gl_FragCoord") || strstr(clean, "discard")) {
-            free(clean);
-            return 0;
-        }
-    } else if (type == 0x8B30 /* GL_FRAGMENT_SHADER */) {
-        /* Fragment shader MUST write gl_FragColor / gl_FragData or execute discard */
-        if (!strstr(clean, "gl_FragColor") && !strstr(clean, "gl_FragData") && !strstr(clean, "discard")) {
-            free(clean);
-            return 0;
-        }
-        /* Disallow vertex built-ins and keywords (attribute is strictly vertex-only) */
-        if (strstr(clean, "gl_Position") || strstr(clean, "attribute") || strstr(clean, "gl_PointSize")) {
-            free(clean);
-            return 0;
-        }
-    } else {
-        free(clean);
-        return 0;
-    }
-
-    /* 5. Qualifier syntax validation (prevent bare keywords without type and identifier) */
-    const char *quals[] = {"attribute", "uniform", "varying", "precision"};
-    for (int q = 0; q < 4; q++) {
-        const char *cur = clean;
-        size_t qlen = sw_strlen(quals[q]);
-        while ((cur = strstr(cur, quals[q])) != NULL) {
-            int left_b = (cur == clean || !is_ident_char(*(cur - 1)));
-            int right_b = !is_ident_char(*(cur + qlen));
-            if (left_b && right_b) {
-                const char *after = cur + qlen;
-                while (*after && is_space_char(*after)) after++;
-                if (*after == ';' || *after == '}' || *after == '(' || *after == ')' || *after == '=' || *after == '\0') {
-                    free(clean);
-                    return 0; /* Bare qualifier keyword error */
-                }
-            }
-            cur += qlen;
-        }
-    }
-
-    free(clean);
-    return 1;
-}
+/* The frontend performs grammar, name and type checking. Linking requires
+ * the pinned compiler archive: there is no heuristic fallback. */
+extern int sw_validate_shader(unsigned int type, const char *source,
+                              char *log, size_t log_size);
 
 __attribute__((visibility("default")))
 GLuint glCreateShader(GLenum type) {
@@ -959,6 +779,7 @@ GLuint glCreateShader(GLenum type) {
     g_shaders[id].type = type;
     g_shaders[id].compiled = GL_FALSE;
     g_shaders[id].source = NULL;
+    g_shaders[id].info_log[0] = '\0';
     g_shaders[id].has_color = GL_FALSE;
     g_shaders[id].color[0] = 1.0f;
     g_shaders[id].color[1] = 1.0f;
@@ -1008,7 +829,9 @@ __attribute__((visibility("default")))
 void glCompileShader(GLuint shader) {
     if (shader > 0 && shader < 64) {
         const char *src = g_shaders[shader].source;
-        if (src && validate_shader_source(g_shaders[shader].type, src)) {
+        if (sw_validate_shader(g_shaders[shader].type, src,
+                               g_shaders[shader].info_log,
+                               sizeof(g_shaders[shader].info_log))) {
             g_shaders[shader].compiled = GL_TRUE;
             if (g_shaders[shader].type == 0x8B30 /* GL_FRAGMENT_SHADER */) {
                 parse_fragment_color(src, g_shaders[shader].color, &g_shaders[shader].has_color);
@@ -1027,7 +850,14 @@ void glGetShaderiv(GLuint shader, GLenum pname, GLint *params) {
         case GL_COMPILE_STATUS:
             *params = (shader > 0 && shader < 64) ? g_shaders[shader].compiled : GL_FALSE;
             break;
-        case GL_INFO_LOG_LENGTH: *params = 0; break;
+        case GL_INFO_LOG_LENGTH: {
+            size_t n = 0;
+            if (shader > 0 && shader < 64) {
+                while (g_shaders[shader].info_log[n]) n++;
+            }
+            *params = n ? (GLint)(n + 1) : 0;
+            break;
+        }
         case GL_SHADER_SOURCE_LENGTH: {
             if (shader > 0 && shader < 64 && g_shaders[shader].source) {
                 size_t l = 0;
@@ -1044,8 +874,17 @@ void glGetShaderiv(GLuint shader, GLenum pname, GLint *params) {
 
 __attribute__((visibility("default")))
 void glGetShaderInfoLog(GLuint shader, GLsizei bufsize, GLsizei *length, GLchar *infolog) {
-    if (length) *length = 0;
-    if (infolog && bufsize > 0) infolog[0] = '\0';
+    GLsizei copied = 0;
+    if (infolog && bufsize > 0) {
+        if (shader > 0 && shader < 64) {
+            while (copied < bufsize - 1 && g_shaders[shader].info_log[copied]) {
+                infolog[copied] = g_shaders[shader].info_log[copied];
+                copied++;
+            }
+        }
+        infolog[copied] = '\0';
+    }
+    if (length) *length = copied;
 }
 
 __attribute__((visibility("default")))

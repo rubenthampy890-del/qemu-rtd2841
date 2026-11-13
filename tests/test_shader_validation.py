@@ -1,12 +1,14 @@
 """Unit and regression tests for GLES2 shader validation in software_egl_gles2.c."""
 
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-GLES_SW_SRC = REPO_ROOT / "tools/software_egl_gles2.c"
+sys.path.insert(0, str(REPO_ROOT / "tools"))
+from build_shader_compiler import build
 
 HARNESS_C = r"""
 #include <stdio.h>
@@ -30,6 +32,19 @@ int main(int argc, char **argv) {
 
     GLint status = -1;
     glGetShaderiv(sh, GL_COMPILE_STATUS, &status);
+    GLint log_size = -1;
+    char log[1024];
+    GLsizei length = -1;
+    glGetShaderiv(sh, GL_INFO_LOG_LENGTH, &log_size);
+    glGetShaderInfoLog(sh, sizeof(log), &length, log);
+    if (length < 0 || log[length] != 0) return 5;
+    if (log_size != (length ? length + 1 : 0)) return 6;
+    if (!status && !length) return 7;
+    char tiny[5] = {0, 0, 0, 0, 'X'};
+    GLsizei short_length = -1;
+    glGetShaderInfoLog(sh, 4, &short_length, tiny);
+    if (short_length < 0 || short_length > 3 || tiny[short_length] != 0 || tiny[4] != 'X') return 8;
+    fprintf(stderr, "%s", log);
     printf("%d\n", status);
     return 0;
 }
@@ -38,25 +53,23 @@ int main(int argc, char **argv) {
 class ShaderValidationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.bin_path = Path(tempfile.mktemp(prefix="shader_harness_"))
-        cmd = [
-            "clang", "-O2", "-I", str(REPO_ROOT),
-            "-DSTANDALONE_TEST", "-x", "c", "-",
-            "-o", str(cls.bin_path)
-        ]
-        proc = subprocess.run(cmd, input=HARNESS_C, capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise RuntimeError(f"Failed to compile shader harness: {proc.stderr}")
-
-    @classmethod
-    def tearDownClass(cls):
-        if cls.bin_path.exists():
-            cls.bin_path.unlink()
+        archive = build("host")["archive"]
+        cls.temp = tempfile.TemporaryDirectory(prefix="shader_harness_")
+        cls.addClassCleanup(cls.temp.cleanup)
+        cls.bin_path = Path(cls.temp.name) / "probe"
+        obj = Path(cls.temp.name) / "probe.o"
+        subprocess.run([
+            "clang", "-O2", "-I", str(REPO_ROOT), "-DSTANDALONE_TEST",
+            "-x", "c", "-", "-c", "-o", str(obj)
+        ], input=HARNESS_C, capture_output=True, text=True, check=True, timeout=30)
+        subprocess.run([
+            "clang++", str(obj), archive, "-pthread", "-o", str(cls.bin_path)
+        ], capture_output=True, text=True, check=True, timeout=30)
 
     def compile_shader(self, shader_type: int, source: str) -> int:
         proc = subprocess.run(
             [str(self.bin_path), str(shader_type), source],
-            capture_output=True, text=True, check=True
+            capture_output=True, text=True, check=True, timeout=10
         )
         return int(proc.stdout.strip())
 
@@ -119,9 +132,51 @@ class ShaderValidationTests(unittest.TestCase):
         fs_attr = "attribute vec4 pos; void main() { gl_FragColor = pos; }"
         self.assertEqual(self.compile_shader(0x8B30, fs_attr), 0)
 
-    def test_fragment_shader_without_color_or_discard_rejected(self):
+    def test_missing_output_is_not_a_syntax_error(self):
         fs_no_color = "precision mediump float; void main() { float x = 1.0; }"
-        self.assertEqual(self.compile_shader(0x8B30, fs_no_color), 0)
+        self.assertEqual(self.compile_shader(0x8B30, fs_no_color), 1)
+
+    def test_invalid_statement_grammar(self):
+        for body in (
+            "gl_FragColor=vec4(1.0); banana ???;",
+            "float x = ; gl_FragColor=vec4(1.0);",
+            "float x = 1.0 gl_FragColor=vec4(1.0);",
+            "gl_FragColor=vec4(unknown_name);",
+            "gl_FragColor=vec4(1.0); uniform float;",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(self.compile_shader(
+                    0x8B30, "precision mediump float; void main(){" + body + "}"), 0)
+
+    def test_keyword_substrings_are_legal_identifiers(self):
+        for kind, name, output in (
+            (0x8B30, "INVALID_factor", "gl_FragColor"),
+            (0x8B30, "attribute_weight", "gl_FragColor"),
+            (0x8B31, "discard_value", "gl_Position"),
+        ):
+            with self.subTest(name=name):
+                source = ("precision mediump float; void main(){float " + name +
+                          "=1.0; " + output + "=vec4(" + name + ");}")
+                self.assertEqual(self.compile_shader(kind, source), 1)
+
+    def test_type_and_stage_errors(self):
+        cases = [
+            (0x8B30, "precision mediump float; void main(){gl_FragColor=1.0;}"),
+            (0x8B31, "void main(){discard; gl_Position=vec4(1.0);}"),
+            (0x8B30, "precision mediump float; void main(){gl_Position=vec4(1.0);}"),
+            (0x8B30, "precision mediump float; void main(){gl_FragColor=vec4(1.0); /*"),
+            (0x8B31, "void main(); void helper(){gl_Position=vec4(1.0);}"),
+            (0x8B31, "void main(){gl_Position=vec4(1.0);} void main(){}"),
+        ]
+        for kind, source in cases:
+            with self.subTest(source=source):
+                self.assertEqual(self.compile_shader(kind, source), 0)
+
+    def test_preprocessor_and_functions(self):
+        source = ("#define INVALID_factor 0.5\nprecision mediump float;\n"
+                  "float tint(float x){return x * 2.0;}\n"
+                  "void main(){gl_FragColor=vec4(tint(INVALID_factor));}")
+        self.assertEqual(self.compile_shader(0x8B30, source), 1)
 
     def test_valid_shaders_accepted(self):
         vs_valid = "attribute vec4 pos; void main(void) { gl_Position = pos; }"

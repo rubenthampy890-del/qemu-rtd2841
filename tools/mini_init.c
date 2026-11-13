@@ -882,6 +882,8 @@ static void load_prop_file(void *area, const char *path) {
     }
 }
 
+static int is_android_mode(void);
+
 static void *init_properties_area(void) {
     static const char str_prop_file[] = "/dev/__properties__";
     my_syscall1(10 /* __NR_unlink */, (long)str_prop_file);
@@ -968,12 +970,31 @@ static void *init_properties_area(void) {
     prop_area_set(area, "dalvik.vm.isa.arm.features", "default");
     prop_area_set(area, "vold.has_adoptable", "0");
 
-    /* Load system and vendor prop files if present */
+    /* Android 9 keeps system default properties here, including the package
+     * manager's required pm.dexopt filters. Load genuine firmware values.
+     */
+    load_prop_file(area, "/system/etc/prop.default");
+    /* Load system and vendor overrides if present. */
     load_prop_file(area, "/default.prop");
     load_prop_file(area, "/build.prop");
     load_prop_file(area, "/vendor/default.prop");
     load_prop_file(area, "/system/build.prop");
     load_prop_file(area, "/vendor/build.prop");
+
+    static const char *dexopt_keys[] = {
+        "pm.dexopt.first-boot", "pm.dexopt.boot", "pm.dexopt.install",
+        "pm.dexopt.bg-dexopt", "pm.dexopt.ab-ota", "pm.dexopt.inactive",
+        "pm.dexopt.shared"
+    };
+    for (unsigned int i = 0; i < sizeof(dexopt_keys) / sizeof(dexopt_keys[0]); i++) {
+        const char *value = prop_area_get(area, dexopt_keys[i]);
+        if ((!value || !*value) && is_android_mode()) {
+            print_str("[-] Required firmware property missing: ");
+            print_str(dexopt_keys[i]);
+            print_str("; check /system/etc/prop.default\n");
+            return 0;
+        }
+    }
 
     /* Ensure ro.property_service.version remains 2 and ro.adb.secure remains 0 */
     prop_area_set(area, "ro.property_service.version", "2");
@@ -1222,6 +1243,70 @@ static int spawn_service_manager(const char *name, const char *cmd, char *const 
         print_str("\n");
         exit_sm_child(127);
     }
+    return (int)rc;
+}
+
+/* Stock vendor rc files specify system:system for these bootstrap HALs.
+ * Power additionally uses group wakelock (3010) and CAP_BLOCK_SUSPEND (36).
+ * Check identity/capability setup before exec; never fall back to root.
+ */
+static int spawn_bootstrap_hal(const char *cmd, int power_capability) {
+    long pid = my_syscall0(2 /* fork */);
+    long rc = pid;
+    const char *operation = "fork";
+    if (pid < 0) goto failed;
+    if (pid > 0) {
+        print_str("[*] HAL child spawned: ");
+        print_str(cmd);
+        print_str(", pid=");
+        print_dec(pid);
+        print_str("; registration requires a HwBinder probe\n");
+        return (int)pid;
+    }
+    for (int fd = 3; fd < 1024; fd++) {
+        operation = "close inherited descriptor";
+        rc = my_syscall1(6 /* close */, fd);
+        if (rc != 0 && rc != -9 /* EBADF */) goto failed;
+    }
+    unsigned int groups[] = {1000, 3010};
+    operation = "setgroups32";
+    rc = my_syscall2(206, power_capability ? 2 : 1, (long)groups);
+    if (rc != 0) goto failed;
+    operation = "setresgid32";
+    rc = my_syscall3(210, 1000, 1000, 1000);
+    if (rc != 0) goto failed;
+    if (power_capability) {
+        operation = "PR_SET_KEEPCAPS";
+        rc = my_syscall5(172 /* prctl */, 8, 1, 0, 0, 0);
+        if (rc != 0) goto failed;
+    }
+    operation = "setresuid32";
+    rc = my_syscall3(208, 1000, 1000, 1000);
+    if (rc != 0) goto failed;
+    if (power_capability) {
+        struct { unsigned int version; int pid; } header = {0x20080522, 0};
+        struct { unsigned int effective, permitted, inheritable; } data[2] = {
+            {0, 0, 0}, {1U << 4, 1U << 4, 1U << 4}
+        };
+        operation = "capset BLOCK_SUSPEND";
+        rc = my_syscall2(185 /* capset */, (long)&header, (long)data);
+        if (rc != 0) goto failed;
+        operation = "PR_CAP_AMBIENT_RAISE BLOCK_SUSPEND";
+        rc = my_syscall5(172, 47, 2, 36, 0, 0);
+        if (rc != 0) goto failed;
+    }
+    char *argv[] = {(char *)cmd, 0};
+    operation = "execve";
+    rc = my_syscall3(11, (long)cmd, (long)argv, (long)envp);
+failed:
+    print_str("[-] HAL startup failed: ");
+    print_str(cmd);
+    print_str(" at ");
+    print_str(operation);
+    print_str(", rc=");
+    print_dec(rc);
+    print_str("\n");
+    if (pid == 0) exit_sm_child(125);
     return (int)rc;
 }
 
@@ -1607,6 +1692,73 @@ static int is_android_mode(void) {
     return 0;
 }
 
+/* Android 9 rootdir/init.rc creates these views before Zygote forks.
+ * They are initially empty; vold must populate actual storage volumes later.
+ * ARM flags/syscalls: vendor arch/arm/include/uapi/asm/{fcntl,unistd}.h.
+ */
+static int prepare_storage_dir(const char *path, int mode) {
+    long rc = my_syscall2(39 /* mkdir */, (long)path, mode);
+    const char *operation = "mkdir";
+    if (rc != 0 && rc != -17 /* EEXIST */) goto failed;
+
+    /* EEXIST alone is insufficient: verify this is a directory. */
+    operation = "open directory";
+    rc = my_syscall3(5 /* open */, (long)path, 040000 /* ARM O_DIRECTORY */, 0);
+    if (rc < 0) goto failed;
+    operation = "close directory";
+    rc = my_syscall1(6 /* close */, rc);
+    if (rc != 0) goto failed;
+    operation = "chown";
+    rc = my_syscall3(212 /* chown32 */, (long)path, 0, 0);
+    if (rc != 0) goto failed;
+    operation = "chmod";
+    rc = my_syscall2(15 /* chmod */, (long)path, mode);
+    if (rc != 0) goto failed;
+    return 0;
+
+failed:
+    print_str("[-] Android storage ");
+    print_str(operation);
+    print_str(" failed: ");
+    print_str(path);
+    print_str(", rc=");
+    print_dec(rc);
+    print_str("\n");
+    return (int)rc;
+}
+
+static int prepare_android_storage(void) {
+    static const struct { const char *path; int mode; } dirs[] = {
+        {"/mnt/user", 0755},
+        {"/mnt/user/0", 0755},
+        {"/mnt/runtime", 0700},
+        {"/mnt/runtime/default", 0755},
+        {"/mnt/runtime/default/self", 0755},
+        {"/mnt/runtime/read", 0755},
+        {"/mnt/runtime/read/self", 0755},
+        {"/mnt/runtime/write", 0755},
+        {"/mnt/runtime/write/self", 0755},
+    };
+    for (unsigned int i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+        int rc = prepare_storage_dir(dirs[i].path, dirs[i].mode);
+        if (rc != 0) return rc;
+    }
+    /* Share future volume mounts into the slave storage view, as in init.rc.
+     * Scope propagation to /mnt; unrelated guest mounts need not be changed.
+     */
+    int rc = check_mount(0, "/mnt", 0,
+                         (1UL << 20) | 16384 /* MS_SHARED | MS_REC */, 0);
+    if (rc != 0) return rc;
+    rc = check_mount("/mnt/runtime/default", "/storage", 0,
+                     4096 | 16384 /* MS_BIND | MS_REC */, 0);
+    if (rc != 0) return rc;
+    rc = check_mount(0, "/storage", 0,
+                     (1UL << 19) | 16384 /* MS_SLAVE | MS_REC */, 0);
+    if (rc != 0) return rc;
+    print_str("[+] Android storage namespace directories and mounts prepared\n");
+    return 0;
+}
+
 static void prepare_android_runtime_dirs(void) {
     static const char str_android_flag2[] = "/data/android_mode";
     long amfd = my_syscall3(5 /* __NR_open */, (long)str_android_flag2, 0102 /* O_CREAT|O_RDWR */, 0644);
@@ -1620,6 +1772,9 @@ static void prepare_android_runtime_dirs(void) {
     static const char str_user_dir[]     = "/data/user";
     static const char str_user_0_link[]  = "/data/user/0";
     static const char str_data_app[]     = "/data/app";
+    static const char str_data_app_priv[] = "/data/app-private";
+    static const char str_data_app_eph[]  = "/data/app-ephemeral";
+    static const char str_data_app_asec[] = "/data/app-asec";
     static const char str_data_data[]    = "/data/data";
     static const char str_data_anr[]     = "/data/anr";
     static const char str_data_tomb[]    = "/data/tombstones";
@@ -1679,6 +1834,18 @@ static void prepare_android_runtime_dirs(void) {
     my_syscall2(39 /* __NR_mkdir */, (long)str_data_app, 0771);
     my_syscall3(212 /* __NR_chown32 */, (long)str_data_app, 1000, 1000);
     my_syscall2(15 /* __NR_chmod */, (long)str_data_app, 0771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_data_app_priv, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_data_app_priv, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_data_app_priv, 0771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_data_app_eph, 0771);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_data_app_eph, 1000, 1000);
+    my_syscall2(15 /* __NR_chmod */, (long)str_data_app_eph, 0771);
+
+    my_syscall2(39 /* __NR_mkdir */, (long)str_data_app_asec, 0700);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_data_app_asec, 0, 0);
+    my_syscall2(15 /* __NR_chmod */, (long)str_data_app_asec, 0700);
 
     my_syscall2(39 /* __NR_mkdir */, (long)str_data_anr, 0775);
     my_syscall3(212 /* __NR_chown32 */, (long)str_data_anr, 1000, 1000);
@@ -2671,10 +2838,32 @@ void _start(void) {
         print_str("[+] Boot mode: Android Userspace (rendering boot splash display)\n");
         paint_tcl_tv_display();
         prepare_android_runtime_dirs();
+        if (r_mnt != 0 || r_storage != 0 || prepare_android_storage() != 0) {
+            print_str("[-] Android startup stopped: storage setup failed\n");
+            /* Keep PID 1 alive and ADB available for diagnosis. */
+            while (1) {
+                int status = 0;
+                long child = my_syscall4(114 /* wait4 */, -1,
+                                         (long)&status, 0, 0);
+                if (child < 0 && child != -4 /* EINTR */) {
+                    my_sleep_ms(1000);
+                }
+            }
+        }
 
         /* Spawn logd and tombstoned early so logging and crash reporting work */
         spawn_logd();
         spawn_tombstoned();
+
+        /* These stock HALs unblock system_server bootstrap. Their hardware
+         * operations remain vendor code; registration is checked at runtime.
+         */
+        int memtrack_pid = spawn_bootstrap_hal(
+            "/vendor/bin/hw/android.hardware.memtrack@1.0-service", 0);
+        int power_pid = spawn_bootstrap_hal(
+            "/vendor/bin/hw/android.hardware.power@1.0-service", 1);
+        int light_pid = spawn_bootstrap_hal(
+            "/vendor/bin/hw/android.hardware.light@2.0-service", 0);
 
         /* Spawn Graphics HALs */
         static const char str_configstore[] = "/vendor/bin/hw/android.hardware.configstore@1.1-service";
@@ -2726,8 +2915,18 @@ void _start(void) {
         /* Allow installd socket and environment to settle before zygote */
         my_sleep_ms(1000);
 
-        /* Spawn Zygote */
-        spawn_zygote();
+        /* A fork failure is fatal to framework bootstrap, while the existing
+         * ADB/graphics services remain available for diagnosis. Child exec
+         * failures are reported explicitly and reaped below.
+         */
+        if (memtrack_pid > 0 && power_pid > 0 && light_pid > 0) {
+            int zygote_pid = spawn_zygote();
+            if (zygote_pid < 0) {
+                print_str("[-] Android framework not started: Zygote failed\n");
+            }
+        } else {
+            print_str("[-] Android framework not started: HAL fork failed\n");
+        }
 
         /* Enter PID 1 child reaping loop:
          * Blocking wait4(-1, (long)&status, 0, 0) wakes up whenever any child exits.

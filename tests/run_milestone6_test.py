@@ -25,6 +25,7 @@ import hashlib
 import http.server
 import json
 import os
+import sys
 import re
 import selectors
 import signal
@@ -204,35 +205,25 @@ def compile_artifacts():
         arm_gcc,
         "-march=armv7-a", "-nostdlib", "-static", "-fno-builtin", "-O2",
         f"-I{REPO_ROOT / 'tools'}",
-        str(INIT_SRC), "-o", str(INIT_BIN)
+        str(INIT_SRC), "-o", str(INIT_BIN), "-lgcc"
     ]
     res_init = subprocess.run(cmd_init, capture_output=True, text=True)
     if res_init.returncode != 0:
         raise RuntimeError(f"Failed to compile mini_init.c: {res_init.stderr}")
     print(f"[+] build/phase3/mini_init compiled: {INIT_BIN.stat().st_size} bytes, sha256={sha256(INIT_BIN)}")
 
-    print(f"[*] Compiling tools/software_egl_gles2.c -> build/phase3/libGLES_software.so via {clang}...")
-    cmd_gles_c = [
-        clang, "-target", "armv7a-linux-androideabi", "-ffreestanding", "-O2", "-fPIC", "-c",
-        str(GLES_SW_SRC), "-o", str(GLES_SW_OBJ)
-    ]
-    res_gles_c = subprocess.run(cmd_gles_c, capture_output=True, text=True)
-    if res_gles_c.returncode != 0:
-        raise RuntimeError(f"Failed to compile software_egl_gles2.c: {res_gles_c.stderr}")
-
-    lib_path = REF / "staging/system_extracted/lib"
-    if not lib_path.is_dir():
-        lib_path = REPO_ROOT / "staging/system_extracted/lib"
-
-    cmd_gles_ld = [
-        arm_ld, "-shared",
-        str(GLES_SW_OBJ), "-o", str(GLES_SW_BIN),
-        f"-L{lib_path}", "-lc"
-    ]
-    res_gles_ld = subprocess.run(cmd_gles_ld, capture_output=True, text=True)
-    if res_gles_ld.returncode != 0:
-        raise RuntimeError(f"Failed to link libGLES_software.so: {res_gles_ld.stderr}")
-    print(f"[+] build/phase3/libGLES_software.so compiled: {GLES_SW_BIN.stat().st_size} bytes, sha256={sha256(GLES_SW_BIN)}")
+    # The real GLSL frontend requires the pinned source and Android NDK.
+    # Keep this library self-contained by linking the C++ runtime statically.
+    res_gles = subprocess.run([
+        sys.executable, str(ROOT / "tools/build_shader_compiler.py"),
+        "--target", "android",
+    ], capture_output=True, text=True, timeout=600)
+    if res_gles.returncode != 0:
+        raise RuntimeError("Shader compiler build failed: " + res_gles.stderr)
+    built = json.loads(res_gles.stdout)
+    GLES_SW_BIN.write_bytes(Path(built["library"]).read_bytes())
+    print(f"[+] GLES library built: {GLES_SW_BIN.stat().st_size} bytes, "
+          f"sha256={sha256(GLES_SW_BIN)}")
 
     if FBDEV_SRC.exists():
         print(f"[*] Compiling tests/test_fbdev_hwc.c -> build/phase3/test_fbdev_hwc via {arm_gcc}...")

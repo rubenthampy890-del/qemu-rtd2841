@@ -77,7 +77,7 @@ def compile_artifacts():
         "/opt/homebrew/bin/arm-none-eabi-gcc",
         "-march=armv7-a", "-nostdlib", "-static", "-fno-builtin", "-O2",
         f"-I{ROOT / 'tools'}",
-        str(INIT_SRC), "-o", str(INIT_BIN)
+        str(INIT_SRC), "-o", str(INIT_BIN), "-lgcc"
     ]
     res_init = subprocess.run(cmd_init, capture_output=True, text=True)
     if res_init.returncode != 0:

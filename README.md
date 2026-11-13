@@ -26,6 +26,11 @@ quickstart a complete Android installation. See [HARDWARE_FIDELITY.md](HARDWARE_
 for hardware coverage and [Android and kernel development](#android-and-kernel-development)
 for the additional preparation.
 
+Shader builds require the pinned compiler frontend and, for ARM32 guest builds,
+the Android NDK. See [shader compiler setup](tools/SHADER_COMPILER.md).
+Shader compilation tests do not establish complete shader execution or Android
+framework readiness.
+
 ## Before you start
 
 - Use a Mac or Linux computer with an internet connection. The main Linux

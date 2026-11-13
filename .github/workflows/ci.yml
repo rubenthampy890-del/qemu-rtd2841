@@ -80,3 +80,26 @@ jobs:
           path: |
             tests/verification_log.txt
             *.log
+
+  shader-validation:
+    name: GLSL validation and Android readiness predicates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Install Host Compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang build-essential python3 git
+      - name: Fetch Pinned GLSL Compiler Source
+        run: |
+          mkdir -p build/phase3/swiftshader-src
+          git -C build/phase3/swiftshader-src init
+          git -C build/phase3/swiftshader-src remote add origin https://github.com/google/swiftshader.git
+          git -C build/phase3/swiftshader-src fetch --depth 1 origin ce69367855c4961f8ab06323512e1958fe21b80a
+          git -C build/phase3/swiftshader-src checkout --detach FETCH_HEAD
+      - name: Run Firmware Independent Tests
+        run: |
+          python3 tests/test_shader_validation.py
+          PYTHONPATH=tests python3 -m unittest tests/test_android_readiness.py
