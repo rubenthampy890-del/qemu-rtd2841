@@ -2,7 +2,7 @@
 """
 tests/run_fbdev_hwc_test.py - Automated Framebuffer & HWC Surface Verification Runner
 Target: Realtek RTD2841 / TCL RT41 Chassis (tv030)
-Adheres strictly to the 7 OpenDTV Project Inviolable Doctrines.
+Adheres strictly to the RTD2841 Project Inviolable Doctrines.
 """
 
 import hashlib
@@ -189,13 +189,13 @@ def boot_with_overlay(overlay, output_dir, commands, terminal_marker, timeout_se
     }
 
 def main():
-    print("[*] OpenDTV Milestone 3: Framebuffer & HWC Hardware Verification")
+    print("[*] Milestone 3: Framebuffer & HWC Hardware Verification")
     for p in (DISK, KERNEL, DTB, QEMU, QEMU_IMG, TEST_SRC):
         if not p.is_file():
             print(f"[-] FAILED: Missing prerequisite file: {p}")
             sys.exit(1)
 
-    work_dir = Path(tempfile.mkdtemp(prefix="opendtv-fb-test-", dir="/private/tmp"))
+    work_dir = Path(tempfile.mkdtemp(prefix="rtd2841-fb-test-", dir="/private/tmp"))
     print(f"[*] Artifacts directory: {work_dir}")
 
     disk_hash_before = sha256_file(DISK)

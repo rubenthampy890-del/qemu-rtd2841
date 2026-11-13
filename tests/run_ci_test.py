@@ -324,7 +324,7 @@ def main():
             print("[-] Tier 3 requires qemu-img for an isolated disk overlay.", file=sys.stderr)
             t3 = False
         else:
-            with tempfile.TemporaryDirectory(prefix="opendtv-tier3-") as tmpdir:
+            with tempfile.TemporaryDirectory(prefix="rtd2841-tier3-") as tmpdir:
                 overlay = os.path.join(tmpdir, "emmc-overlay.qcow2")
                 create = None
                 try:

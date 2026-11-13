@@ -55,8 +55,8 @@ COMMANDS = [
 ]
 
 def main():
-    print("[*] OpenDTV Phase 3: Probing Graphics HALs, SurfaceFlinger, and ART/Zygote...")
-    with tempfile.TemporaryDirectory(prefix="opendtv-probe-") as tmpdir:
+    print("[*] Phase 3: Probing Graphics HALs, SurfaceFlinger, and ART/Zygote...")
+    with tempfile.TemporaryDirectory(prefix="rtd2841-probe-") as tmpdir:
         td = Path(tmpdir)
         overlay = td / "overlay.qcow2"
         subprocess.run([str(QEMU_IMG), "create", "-f", "qcow2", "-b", str(DISK), "-F", "raw", str(overlay)],

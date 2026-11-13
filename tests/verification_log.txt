@@ -86,7 +86,7 @@ Console Output:
 [+] Mounted /proc and /sys filesystems
 [+] Mounted /vendor from /dev/mmcblk0p2 (ext4)
 [+] Mounted tmpfs on /data, /cache, /tmp, /mnt, /storage
-[*] Initializing OpenDTV Realtek Network Subsystem...
+[*] Initializing RTD2841 Realtek Network Subsystem...
 [ETH] rtl_open
 eth0: rtl_phy_reset_cond == 1 (loop: 100, delay: 1).
 eth0: [ETH] link up, 10Mbps, half-duplex

@@ -74,7 +74,7 @@ def run_test():
             print(f"[-] Error: {desc} not found at {f}", file=sys.stderr)
             return False
 
-    with tempfile.TemporaryDirectory(prefix="opendtv-ir-test-") as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="rtd2841-ir-test-") as tmpdir:
         overlay = os.path.join(tmpdir, "overlay.qcow2")
         qmp_sock = os.path.join(tmpdir, "qmp.sock")
         hmp_sock = os.path.join(tmpdir, "hmp.sock")

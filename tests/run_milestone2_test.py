@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OpenDTV Phase 3 Milestone 2 Verification Runner
+RTD2841 Phase 3 Milestone 2 Verification Runner
 Target: Realtek RTD2841 / TCL RT41 / tv030
 
 Verifies:
@@ -12,7 +12,7 @@ Verifies:
 3. ADB authenticated root execution path:
    - adb connect 127.0.0.1:15566
    - adb shell /system/xbin/su -c "id" returns UID 0.
-4. Adherence to all 7 OpenDTV Inviolable Doctrines.
+4. Adherence to all RTD2841 Project Inviolable Doctrines.
 """
 
 import hashlib
@@ -182,12 +182,12 @@ def boot_qemu(overlay: Path, output: Path, commands: list, terminal_marker: byte
 
 def main():
     print("===================================================================")
-    print("[*] OpenDTV RTD2841 Phase 3 Milestone 2 Verification")
+    print("[*] RTD2841 Phase 3 Milestone 2 Verification")
     print("===================================================================")
 
     compile_artifacts()
 
-    out_dir = Path(tempfile.mkdtemp(prefix="opendtv-milestone2-", dir="/private/tmp"))
+    out_dir = Path(tempfile.mkdtemp(prefix="rtd2841-milestone2-", dir="/private/tmp"))
     print(f"[*] Artifact Directory: {out_dir}")
 
     disk_hash_before = sha256(DISK)
@@ -465,7 +465,7 @@ def main():
         (ROOT / "tests/milestone2_results.json").write_text(json.dumps(final_report, indent=2) + "\n")
 
         print("\n===================================================================")
-        print("[>>> OPENDTV PHASE 3 MILESTONE 2 VERIFICATION PASSED <<<]")
+        print("[>>> RTD2841 PHASE 3 MILESTONE 2 VERIFICATION PASSED <<<]")
         print("===================================================================")
         print(json.dumps(final_report, indent=2))
         return 0

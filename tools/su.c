@@ -3,7 +3,7 @@
  * Target: Realtek RTD2841 / TCL RT41 Chassis (Board tv030)
  *
  * Uses raw EABI syscalls (svc 0) to ensure zero libc dependencies.
- * Adheres strictly to the 7 OpenDTV Inviolable Doctrines.
+ * Adheres strictly to the RTD2841 Project Inviolable Doctrines.
  */
 
 static inline int sys_write(int fd, const void *buf, int count) {

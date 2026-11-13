@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-OpenDTV Phase 3 Milestone 1 Verification Runner
+RTD2841 Phase 3 Milestone 1 Verification Runner
 Target: Realtek RTD2841 / TCL RT41 / tv030
 
 Verifies:
 1. Android Bionic property area hybrid trie/BST (/dev/__properties__, 128KB).
 2. Dynamic property service (/dev/socket/property_service) handling PROP_MSG_SETPROP2 via writev.
 3. Persistent ext4 writable storage for /data on eMMC partition 3 (/dev/mmcblk0p3).
-4. Adherence to all 7 OpenDTV Inviolable Doctrines (checked returns, ARM32 EABI, hardware fidelity).
+4. Adherence to all RTD2841 Project Inviolable Doctrines (checked returns, ARM32 EABI, hardware fidelity).
 """
 
 import hashlib
@@ -147,7 +147,7 @@ def boot_qemu(overlay: Path, output: Path, commands: list, terminal_marker: byte
 
 def main():
     print("===================================================================")
-    print("[*] OpenDTV RTD2841 Phase 3 Milestone 1 Verification Suite")
+    print("[*] RTD2841 Phase 3 Milestone 1 Verification Suite")
     print("===================================================================")
 
     compile_artifacts()
@@ -176,7 +176,7 @@ def main():
     print(res_emmc.stdout)
 
     # Step 3: Guest Boot Verification
-    out_dir = Path(tempfile.mkdtemp(prefix="opendtv-milestone1-", dir="/private/tmp"))
+    out_dir = Path(tempfile.mkdtemp(prefix="rtd2841-milestone1-", dir="/private/tmp"))
     print(f"[*] Artifact Directory: {out_dir}")
 
     disk_hash_before = sha256(DISK)
@@ -274,9 +274,9 @@ def main():
             "echo __GETPROP_GRALLOC_RC_${?}__",
             "/system/bin/getprop ro.hardware.hwcomposer",
             "echo __GETPROP_HWC_RC_${?}__",
-            "/system/bin/setprop opendtv.test.m1 passed",
+            "/system/bin/setprop rtd2841.test.m1 passed",
             "echo __SETPROP_M1_RC_${?}__",
-            "/system/bin/getprop opendtv.test.m1",
+            "/system/bin/getprop rtd2841.test.m1",
             "echo __GETPROP_M1_RC_${?}__",
             "/system/bin/setprop ro.test.dynamic.val 42",
             "echo __SETPROP_VAL_RC_${?}__",
@@ -331,7 +331,7 @@ def main():
 
         # Check dynamic property get/set values in output
         if b"passed" not in verify_log:
-            raise RuntimeError("[-] Dynamic property set 'opendtv.test.m1=passed' verification failed")
+            raise RuntimeError("[-] Dynamic property set 'rtd2841.test.m1=passed' verification failed")
         if b"persistence_verification_data" not in verify_log:
             raise RuntimeError("[-] Ext4 /data persistent write/read verification failed")
         if b"/dev/mmcblk0p3 on /data type ext4" not in verify_log:
@@ -369,7 +369,7 @@ def main():
         (ROOT / "tests/milestone1_results.json").write_text(json.dumps(final_report, indent=2) + "\n")
 
         print("\n===================================================================")
-        print("[>>> OPENDTV PHASE 3 MILESTONE 1 VERIFICATION PASSED <<<]")
+        print("[>>> RTD2841 PHASE 3 MILESTONE 1 VERIFICATION PASSED <<<]")
         print("===================================================================")
         print(json.dumps(final_report, indent=2))
         return 0

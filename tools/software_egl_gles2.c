@@ -1,5 +1,5 @@
 /*
- * OpenDTV Software Compatibility EGL 1.4 & OpenGL ES 2.0 Driver
+ * RTD2841 Software Compatibility EGL 1.4 & OpenGL ES 2.0 Driver
  * Target: ARM32 Android 9 Pie (EABI5)
  *
  * Experimental compatibility renderer for Android bring-up without Mali.
@@ -7,6 +7,14 @@
  * limited and is not a conformant general-purpose GLES implementation.
  */
 
+#ifdef STANDALONE_TEST
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#else
 #if defined(__arm__) || defined(__i386__)
 typedef unsigned int size_t;
 #else
@@ -36,6 +44,7 @@ extern int open(const char *pathname, int flags, ...);
 extern int write(int fd, const void *buf, size_t count);
 extern int close(int fd);
 extern int lseek(int fd, int offset, int whence);
+#endif
 
 /* --- EGL Types and Constants --- */
 typedef void *EGLDisplay;
@@ -350,7 +359,7 @@ EGLBoolean eglTerminate(EGLDisplay dpy) {
 __attribute__((visibility("default")))
 const char *eglQueryString(EGLDisplay dpy, EGLint name) {
     switch (name) {
-        case EGL_VENDOR: return "Google Inc. (OpenDTV Software Compatibility)";
+        case EGL_VENDOR: return "Android (RTD2841 Software Compatibility)";
         case EGL_VERSION: return "1.4 Android META-EGL";
         case EGL_EXTENSIONS:
             return "EGL_KHR_image_base EGL_KHR_gl_texture_2D_image EGL_ANDROID_image_native_buffer EGL_KHR_fence_sync EGL_ANDROID_native_fence_sync";
@@ -637,7 +646,11 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
     size_t copy_bytes = (size_t)s->width * (size_t)s->height * 4;
     if (copy_bytes > g_fb_map_size) copy_bytes = g_fb_map_size;
     memcpy(g_fb_map, s->pixels, copy_bytes);
+#if defined(__arm__) || defined(__aarch64__)
     __asm__ volatile("dmb sy" ::: "memory");
+#else
+    __sync_synchronize();
+#endif
     return EGL_TRUE;
 }
 
@@ -687,9 +700,9 @@ EGLint eglDupNativeFenceFDANDROID(EGLDisplay dpy, EGLSyncKHR sync) {
 __attribute__((visibility("default")))
 const GLubyte *glGetString(GLenum name) {
     switch (name) {
-        case GL_VENDOR: return (const GLubyte *)"Google Inc. (OpenDTV Software Rasterizer)";
-        case GL_RENDERER: return (const GLubyte *)"OpenDTV ARM32 Software Rasterizer";
-        case GL_VERSION: return (const GLubyte *)"OpenGL ES 2.0 (OpenDTV Compatibility)";
+        case GL_VENDOR: return (const GLubyte *)"Android (RTD2841 Software Rasterizer)";
+        case GL_RENDERER: return (const GLubyte *)"RTD2841 ARM32 Software Rasterizer";
+        case GL_VERSION: return (const GLubyte *)"OpenGL ES 2.0 (RTD2841 Compatibility)";
         case GL_EXTENSIONS:
             return (const GLubyte *)"GL_OES_EGL_image GL_OES_EGL_image_external GL_OES_rgb8_rgba8 GL_OES_depth24 GL_OES_texture_npot GL_EXT_texture_format_BGRA8888";
         case GL_SHADING_LANGUAGE_VERSION:

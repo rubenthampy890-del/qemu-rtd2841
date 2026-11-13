@@ -56,7 +56,7 @@ else
 fi
 
 echo "========================================================"
-echo " Starting OpenDTV RTD2841 Smart TV Emulator (Cocoa + Shell)"
+echo " Starting RTD2841 Smart TV Emulator (Cocoa + Shell)"
 echo "========================================================"
 echo "Mode:    $MODE"
 echo "Disk:    $DISK (format=$DISK_FMT)"

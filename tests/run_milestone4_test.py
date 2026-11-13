@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OpenDTV Phase 3 Milestone 4 Verification Runner
+RTD2841 Phase 3 Milestone 4 Verification Runner
 Target: Realtek RTD2841 / TCL RT41 / tv030 Android 9 Pie Userspace
 
 Verifies:
@@ -22,7 +22,7 @@ Verifies:
    - getprop ro.build.version.sdk returns '28'
    - service check SurfaceFlinger returns 'found'
    - ps confirms surfaceflinger and active processes
-6. Adherence to all 7 OpenDTV Inviolable Doctrines.
+6. Adherence to all RTD2841 Project Inviolable Doctrines.
 """
 
 import hashlib
@@ -235,12 +235,12 @@ def boot_qemu(overlay: Path, output: Path, commands: list, terminal_marker: byte
 
 def main():
     print("===================================================================")
-    print("[*] OpenDTV RTD2841 Phase 3 Milestone 4 Verification")
+    print("[*] RTD2841 Phase 3 Milestone 4 Verification")
     print("===================================================================")
 
     compile_artifacts()
 
-    out_dir = Path(tempfile.mkdtemp(prefix="opendtv-milestone4-", dir="/private/tmp"))
+    out_dir = Path(tempfile.mkdtemp(prefix="rtd2841-milestone4-", dir="/private/tmp"))
     print(f"[*] Artifact Directory: {out_dir}")
 
     disk_hash_before = sha256(DISK)
@@ -556,7 +556,7 @@ def main():
         (ROOT / "tests/milestone4_results.json").write_text(json.dumps(final_report, indent=2) + "\n")
 
         print("\n===================================================================")
-        print("[>>> OPENDTV PHASE 3 MILESTONE 4 VERIFICATION PASSED <<<]")
+        print("[>>> RTD2841 PHASE 3 MILESTONE 4 VERIFICATION PASSED <<<]")
         print("===================================================================")
         print(json.dumps(final_report, indent=2))
         return 0

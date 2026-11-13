@@ -58,13 +58,17 @@ class ShaderValidationTests(unittest.TestCase):
         cls.addClassCleanup(cls.temp.cleanup)
         cls.bin_path = Path(cls.temp.name) / "probe"
         obj = Path(cls.temp.name) / "probe.o"
-        subprocess.run([
+        res_cc = subprocess.run([
             "clang", "-O2", "-I", str(REPO_ROOT), "-DSTANDALONE_TEST",
             "-x", "c", "-", "-c", "-o", str(obj)
-        ], input=HARNESS_C, capture_output=True, text=True, check=True, timeout=30)
-        subprocess.run([
+        ], input=HARNESS_C, capture_output=True, text=True, timeout=30)
+        if res_cc.returncode != 0:
+            raise RuntimeError(f"Failed to compile probe.o:\n{res_cc.stderr}")
+        res_ld = subprocess.run([
             "clang++", str(obj), archive, "-pthread", "-o", str(cls.bin_path)
-        ], capture_output=True, text=True, check=True, timeout=30)
+        ], capture_output=True, text=True, timeout=30)
+        if res_ld.returncode != 0:
+            raise RuntimeError(f"Failed to link probe binary:\n{res_ld.stderr}")
 
     def compile_shader(self, shader_type: int, source: str) -> int:
         proc = subprocess.run(

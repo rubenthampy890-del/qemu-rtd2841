@@ -1423,7 +1423,7 @@ static int do_http_fetch(unsigned int ip, const char *host_hdr) {
 }
 
 static void init_network_and_verify(void) {
-    print_str("[*] Initializing OpenDTV Realtek Network Subsystem...\n");
+    print_str("[*] Initializing RTD2841 Realtek Network Subsystem...\n");
 
     int socket_verified = 0;
     int ip_assigned = 0;

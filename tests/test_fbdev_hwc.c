@@ -6,7 +6,7 @@
  * memory mapping, pattern write, and bitwise readback verification matching
  * the contract in hwcomposer / HWC2OnFbAdapter and simplefb.
  *
- * Zero libc dependencies. Complies with the 7 OpenDTV Inviolable Doctrines.
+ * Zero libc dependencies. Complies with the RTD2841 Project Inviolable Doctrines.
  */
 
 #define FBIOGET_VSCREENINFO 0x4600
@@ -209,7 +209,7 @@ static inline unsigned int calc_test_pixel(unsigned int x, unsigned int y) {
 }
 
 void _start(void) {
-    print_s("[*] OpenDTV Phase 3: Hardware Framebuffer & Composer HAL Probe\n");
+    print_s("[*] Phase 3: Hardware Framebuffer & Composer HAL Probe\n");
 
     const char *dev_path = "/dev/graphics/fb0";
     long fd = sys_open(dev_path, 2 /* O_RDWR */, 0);
