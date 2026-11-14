@@ -200,6 +200,18 @@ struct my_timeval {
     long tv_usec;
 };
 
+struct my_timespec {
+    long tv_sec;
+    long tv_nsec;
+};
+
+static inline void my_sleep_ms(long ms) {
+    struct my_timespec req;
+    req.tv_sec = ms / 1000;
+    req.tv_nsec = (ms % 1000) * 1000000L;
+    my_syscall2(162 /* __NR_nanosleep */, (long)&req, 0);
+}
+
 struct my_sockaddr_in {
     unsigned short sin_family;
     unsigned short sin_port;
@@ -303,6 +315,13 @@ static const char str_ld[]          = "LD_LIBRARY_PATH=/system/lib:/vendor/lib";
 static const char str_root[]        = "ANDROID_ROOT=/system";
 static const char str_data[]        = "ANDROID_DATA=/data";
 static const char str_storage[]     = "ANDROID_STORAGE=/storage";
+static const char str_ext_storage[] = "EXTERNAL_STORAGE=/sdcard";
+static const char str_asec[]        = "ASEC_MOUNTPOINT=/mnt/asec";
+static const char str_bootlogo[]    = "ANDROID_BOOTLOGO=1";
+static const char str_assets[]      = "ANDROID_ASSETS=/system/app";
+static const char str_cache[]       = "DOWNLOAD_CACHE=/data/cache";
+static const char str_runtime_root[]= "ANDROID_RUNTIME_ROOT=/system";
+static const char str_tzdata_root[] = "ANDROID_TZDATA_ROOT=/system";
 static const char str_egl[]         = "ro.hardware.egl=android";
 static const char str_gralloc[]     = "ro.hardware.gralloc=default";
 static const char str_hwc[]         = "ro.hardware.hwcomposer=default";
@@ -315,6 +334,13 @@ static char *envp[] = {
     (char*)str_root,
     (char*)str_data,
     (char*)str_storage,
+    (char*)str_ext_storage,
+    (char*)str_asec,
+    (char*)str_bootlogo,
+    (char*)str_assets,
+    (char*)str_cache,
+    (char*)str_runtime_root,
+    (char*)str_tzdata_root,
     (char*)str_egl,
     (char*)str_gralloc,
     (char*)str_term,
@@ -1310,6 +1336,58 @@ failed:
     return (int)rc;
 }
 
+/* Stock healthd.rc and vold.rc identities. These services run as root;
+ * unlike the system-UID HALs above, they need privileged kernel operations.
+ * Spawn success is not registration success. PID 1 reports child failures.
+ */
+static int spawn_storage_service(int is_vold) {
+    const char *cmd = is_vold ? "/system/bin/vold" : "/system/bin/healthd";
+    char *argv[] = {(char *)cmd,
+        "--blkid_context=u:r:blkid:s0",
+        "--blkid_untrusted_context=u:r:blkid_untrusted:s0",
+        "--fsck_context=u:r:fsck:s0",
+        "--fsck_untrusted_context=u:r:fsck_untrusted:s0", 0};
+    if (!is_vold) argv[1] = 0;
+    long pid = my_syscall0(2);
+    long rc = pid;
+    const char *operation = "fork";
+    if (pid < 0) goto failed;
+    if (pid > 0) return (int)pid;
+    for (int fd = 3; fd < 1024; fd++) {
+        operation = "close inherited descriptor";
+        rc = my_syscall1(6, fd);
+        if (rc != 0 && rc != -9) goto failed;
+    }
+    unsigned int groups[] = {1000, 3010};
+    operation = "setgroups32";
+    rc = my_syscall2(206, is_vold ? 0 : 2, (long)groups);
+    if (rc != 0) goto failed;
+    operation = "setresgid32";
+    int gid = is_vold ? 1065 : 0;
+    rc = my_syscall3(210, gid, gid, gid);
+    if (rc != 0) goto failed;
+    operation = "setresuid32";
+    rc = my_syscall3(208, 0, 0, 0);
+    if (rc != 0) goto failed;
+    if (is_vold) {
+        operation = "ioprio_set";
+        rc = my_syscall3(314, 1, 0, (2 << 13) | 2);
+        if (rc != 0) goto failed;
+    }
+    operation = "execve";
+    rc = my_syscall3(11, (long)cmd, (long)argv, (long)envp);
+failed:
+    print_str("[-] Storage service startup failed: ");
+    print_str(cmd);
+    print_str(" at ");
+    print_str(operation);
+    print_str(", rc=");
+    print_dec(rc);
+    print_str("\n");
+    if (pid == 0) exit_sm_child(125);
+    return (int)rc;
+}
+
 static long skip_dns_name(const unsigned char *buf, long idx, long len) {
     while (idx < len) {
         unsigned char c = buf[idx];
@@ -1696,7 +1774,7 @@ static int is_android_mode(void) {
  * They are initially empty; vold must populate actual storage volumes later.
  * ARM flags/syscalls: vendor arch/arm/include/uapi/asm/{fcntl,unistd}.h.
  */
-static int prepare_storage_dir(const char *path, int mode) {
+static int prepare_runtime_dir(const char *path, int mode, int uid, int gid) {
     long rc = my_syscall2(39 /* mkdir */, (long)path, mode);
     const char *operation = "mkdir";
     if (rc != 0 && rc != -17 /* EEXIST */) goto failed;
@@ -1709,7 +1787,7 @@ static int prepare_storage_dir(const char *path, int mode) {
     rc = my_syscall1(6 /* close */, rc);
     if (rc != 0) goto failed;
     operation = "chown";
-    rc = my_syscall3(212 /* chown32 */, (long)path, 0, 0);
+    rc = my_syscall3(212 /* chown32 */, (long)path, uid, gid);
     if (rc != 0) goto failed;
     operation = "chmod";
     rc = my_syscall2(15 /* chmod */, (long)path, mode);
@@ -1731,16 +1809,31 @@ static int prepare_android_storage(void) {
     static const struct { const char *path; int mode; } dirs[] = {
         {"/mnt/user", 0755},
         {"/mnt/user/0", 0755},
+        {"/mnt/user/0/primary", 0755},
         {"/mnt/runtime", 0700},
         {"/mnt/runtime/default", 0755},
         {"/mnt/runtime/default/self", 0755},
+        {"/mnt/runtime/default/self/primary", 0755},
         {"/mnt/runtime/read", 0755},
         {"/mnt/runtime/read/self", 0755},
+        {"/mnt/runtime/read/self/primary", 0755},
         {"/mnt/runtime/write", 0755},
         {"/mnt/runtime/write/self", 0755},
+        {"/mnt/runtime/write/self/primary", 0755},
     };
     for (unsigned int i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
-        int rc = prepare_storage_dir(dirs[i].path, dirs[i].mode);
+        int rc = prepare_runtime_dir(dirs[i].path, dirs[i].mode, 0, 0);
+        if (rc != 0) return rc;
+    }
+    static const struct { const char *path; int mode; int uid; int gid; } package_dirs[] = {
+        {"/data/app-private", 0771, 1000, 1000},
+        {"/data/app-ephemeral", 0771, 1000, 1000},
+        {"/data/app-asec", 0700, 0, 0},
+        {"/data/app-lib", 0771, 1000, 1000},
+    };
+    for (unsigned int i = 0; i < sizeof(package_dirs) / sizeof(package_dirs[0]); i++) {
+        int rc = prepare_runtime_dir(package_dirs[i].path, package_dirs[i].mode,
+                                     package_dirs[i].uid, package_dirs[i].gid);
         if (rc != 0) return rc;
     }
     /* Share future volume mounts into the slave storage view, as in init.rc.
@@ -1755,6 +1848,16 @@ static int prepare_android_storage(void) {
     rc = check_mount(0, "/storage", 0,
                      (1UL << 19) | 16384 /* MS_SLAVE | MS_REC */, 0);
     if (rc != 0) return rc;
+
+    /* Symlink /sdcard and /mnt/sdcard to /storage/self/primary as in init.rc */
+    long r = my_syscall1(10 /* __NR_unlink */, (long)"/sdcard");
+    if (r == -21 /* EISDIR */) my_syscall1(40 /* __NR_rmdir */, (long)"/sdcard");
+    my_syscall2(83 /* __NR_symlink */, (long)"/storage/self/primary", (long)"/sdcard");
+
+    r = my_syscall1(10 /* __NR_unlink */, (long)"/mnt/sdcard");
+    if (r == -21 /* EISDIR */) my_syscall1(40 /* __NR_rmdir */, (long)"/mnt/sdcard");
+    my_syscall2(83 /* __NR_symlink */, (long)"/storage/self/primary", (long)"/mnt/sdcard");
+
     print_str("[+] Android storage namespace directories and mounts prepared\n");
     return 0;
 }
@@ -1886,6 +1989,25 @@ static void prepare_android_runtime_dirs(void) {
     my_syscall2(39 /* __NR_mkdir */, (long)str_data_misc, 01771);
     my_syscall3(212 /* __NR_chown32 */, (long)str_data_misc, 1000, 9998);
     my_syscall2(15 /* __NR_chmod */, (long)str_data_misc, 01771);
+
+    static const char str_misc_audioserver[] = "/data/misc/audioserver";
+    my_syscall2(39 /* __NR_mkdir */, (long)str_misc_audioserver, 0700);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_misc_audioserver, 1041, 1041);
+    my_syscall2(15 /* __NR_chmod */, (long)str_misc_audioserver, 0700);
+
+    static const char str_misc_media[] = "/data/misc/media";
+    my_syscall2(39 /* __NR_mkdir */, (long)str_misc_media, 0700);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_misc_media, 1013, 1013);
+    my_syscall2(15 /* __NR_chmod */, (long)str_misc_media, 0700);
+
+    static const char str_data_cache[] = "/data/cache";
+    static const char str_cache_link[] = "/cache";
+    my_syscall2(39 /* __NR_mkdir */, (long)str_data_cache, 0770);
+    my_syscall3(212 /* __NR_chown32 */, (long)str_data_cache, 1000, 2001 /* system:cache */);
+    my_syscall2(15 /* __NR_chmod */, (long)str_data_cache, 0770);
+    long rc_c = my_syscall1(10 /* __NR_unlink */, (long)str_cache_link);
+    if (rc_c == -21 /* EISDIR */) my_syscall1(40 /* __NR_rmdir */, (long)str_cache_link);
+    my_syscall2(83 /* __NR_symlink */, (long)str_data_cache, (long)str_cache_link);
 
     my_syscall2(39 /* __NR_mkdir */, (long)str_misc_de, 01771);
     my_syscall3(212 /* __NR_chown32 */, (long)str_misc_de, 1000, 9998);
@@ -2024,7 +2146,8 @@ static void prepare_android_runtime_dirs(void) {
 }
 
 static int create_control_socket(const char *path, int type, int mode, int uid, int gid) {
-    my_syscall1(10 /* __NR_unlink */, (long)path);
+    long unlink_rc = my_syscall1(10 /* __NR_unlink */, (long)path);
+    if (unlink_rc != 0 && unlink_rc != -2) return (int)unlink_rc;
     long sfd = my_syscall3(281 /* __NR_socket */, 1 /* AF_UNIX */, type, 0);
     if (sfd < 0) {
         print_str("[-] FAILED: socket creation for ");
@@ -2053,13 +2176,186 @@ static int create_control_socket(const char *path, int type, int mode, int uid, 
         my_syscall1(6 /* __NR_close */, sfd);
         return (int)rc;
     }
-    my_syscall2(15 /* __NR_chmod */, (long)path, mode);
-    my_syscall3(212 /* __NR_chown32 */, (long)path, uid, gid);
+    rc = my_syscall2(15, (long)path, mode);
+    if (rc == 0) rc = my_syscall3(212, (long)path, uid, gid);
+    if (rc != 0) {
+        long close_rc = my_syscall1(6, sfd);
+        return (int)(close_rc ? close_rc : rc);
+    }
 
     if (type == 1 /* SOCK_STREAM */ || type == 5 /* SOCK_SEQPACKET */) {
-        my_syscall2(284 /* __NR_listen */, sfd, 16);
+        rc = my_syscall2(284 /* __NR_listen */, sfd, 16);
+        if (rc != 0) {
+            long close_rc = my_syscall1(6, sfd);
+            return (int)(close_rc ? close_rc : rc);
+        }
     }
     return (int)sfd;
+}
+
+/* netd.rc control sockets and storaged.rc identity/capability contract. */
+static int spawn_platform_service(int storage) {
+    const char *cmd = storage ? "/system/bin/storaged" : "/system/bin/netd";
+    long pid = my_syscall0(2), rc = pid;
+    const char *operation = "fork";
+    if (pid < 0) goto failed;
+    if (pid > 0) return (int)pid;
+    for (int fd = 3; fd < 1024; fd++) {
+        operation = "close inherited fd";
+        rc = my_syscall1(6, fd);
+        if (rc && rc != -9) goto failed;
+    }
+    operation = "setgroups";
+    rc = my_syscall2(206, 0, 0);
+    if (rc) goto failed;
+    int gid = storage ? 1032 : 0;
+    operation = "setresgid";
+    rc = my_syscall3(210, gid, gid, gid);
+    if (rc) goto failed;
+    char *child_env[16];
+    int n = 0;
+    while (envp[n]) { child_env[n] = envp[n]; n++; }
+    if (!storage) {
+        const char *paths[] = {"/dev/socket/netd", "/dev/socket/dnsproxyd",
+                              "/dev/socket/mdns", "/dev/socket/fwmarkd"};
+        char *vars[] = {"ANDROID_SOCKET_netd=3", "ANDROID_SOCKET_dnsproxyd=4",
+                        "ANDROID_SOCKET_mdns=5", "ANDROID_SOCKET_fwmarkd=6"};
+        for (int i = 0; i < 4; i++) {
+            operation = "create netd socket";
+            rc = create_control_socket(paths[i], 1, 0660, 0,
+                                       (i == 1 || i == 3) ? 3003 : 1000);
+            if (rc < 0) goto failed;
+            if (rc != i + 3) { rc = -22; goto failed; }
+            child_env[n++] = vars[i];
+        }
+    } else {
+        operation = "open optional ext_csd";
+        rc = my_syscall3(5, (long)"/d/mmc0/mmc0:0001/ext_csd", 0, 0);
+        if (rc == 3) child_env[n++] = "ANDROID_FILE__d_mmc0_mmc0_0001_ext_csd=3";
+        else if (rc < 0) {
+            print_str("[*] storaged ext_csd unavailable, rc=");
+            print_dec(rc); print_str("\n");
+        } else { rc = -22; goto failed; }
+        operation = "setpriority";
+        rc = my_syscall3(97, 0, 0, 10);
+        if (rc) goto failed;
+        /* Bound root exec to DAC_READ_SEARCH, rather than restoring all caps. */
+        for (int cap = 0; cap <= 37; cap++) {
+            if (cap == 2) continue;
+            operation = "drop capability bound";
+            rc = my_syscall5(172, 24, cap, 0, 0, 0);
+            if (rc) goto failed;
+        }
+    }
+    child_env[n] = 0;
+    char *argv[] = {(char *)cmd, 0};
+    operation = "execve";
+    rc = my_syscall3(11, (long)cmd, (long)argv, (long)child_env);
+failed:
+    print_str("[-] Platform service failed: "); print_str(cmd);
+    print_str(" at "); print_str(operation);
+    print_str(", rc="); print_dec(rc); print_str("\n");
+    if (pid == 0) exit_sm_child(125);
+    return (int)rc;
+}
+
+/* Stock audioserver.rc and android.hardware.audio@2.0-service.rc identity.
+ * Both run as AID_AUDIOSERVER (1041), primary GID AID_AUDIO (1005), with
+ * supplementary groups: audio (1005), camera (1006), drmrpc (1026),
+ * inet (3003), media (1013), mediadrm (1031), net_bt (3002), net_bt_admin (3001),
+ * net_bw_acct (3007), and ioprio rt 4.
+ */
+static int spawn_audio_service(int is_hal) {
+    const char *cmd = is_hal ? "/vendor/bin/hw/android.hardware.audio@2.0-service"
+                              : "/system/bin/audioserver";
+    long pid = my_syscall0(2 /* __NR_fork */);
+    long rc = pid;
+    const char *operation = "fork";
+    if (pid < 0) goto failed;
+    if (pid > 0) {
+        print_str("[*] Audio service spawned: ");
+        print_str(cmd);
+        print_str(", pid=");
+        print_dec(pid);
+        print_str("\n");
+        return (int)pid;
+    }
+    for (int fd = 3; fd < 1024; fd++) {
+        operation = "close inherited descriptor";
+        rc = my_syscall1(6 /* __NR_close */, fd);
+        if (rc != 0 && rc != -9 /* -EBADF */) goto failed;
+    }
+    unsigned int groups[] = {1005, 1006, 1026, 3003, 1013, 1031, 3002, 3001, 3007};
+    operation = "setgroups32";
+    rc = my_syscall2(206 /* __NR_setgroups32 */, sizeof(groups) / sizeof(groups[0]), (long)groups);
+    if (rc != 0) goto failed;
+    operation = "setresgid32";
+    rc = my_syscall3(210 /* __NR_setresgid32 */, 1005, 1005, 1005);
+    if (rc != 0) goto failed;
+    operation = "ioprio_set";
+    rc = my_syscall3(314 /* __NR_ioprio_set */, 1 /* IOPRIO_WHO_PROCESS */, 0, (1 << 13) | 4 /* rt 4 */);
+    if (rc != 0) goto failed;
+    operation = "setresuid32";
+    rc = my_syscall3(208 /* __NR_setresuid32 */, 1041, 1041, 1041);
+    if (rc != 0) goto failed;
+    char *argv[] = {(char *)cmd, 0};
+    operation = "execve";
+    rc = my_syscall3(11 /* __NR_execve */, (long)cmd, (long)argv, (long)envp);
+failed:
+    print_str("[-] Audio service failed: ");
+    print_str(cmd);
+    print_str(" at ");
+    print_str(operation);
+    print_str(", rc=");
+    print_dec(rc);
+    print_str("\n");
+    if (pid == 0) exit_sm_child(125);
+    return (int)rc;
+}
+
+/* Helper to bind eth0 to netd's local network once netd socket is accepting commands.
+ * Netd configures policy routing rules that drop interface traffic until attached.
+ */
+static int spawn_netd_route_fixup(void) {
+    long pid = my_syscall0(2 /* __NR_fork */);
+    if (pid < 0) return (int)pid;
+    if (pid > 0) return (int)pid;
+    for (int fd = 3; fd < 1024; fd++) {
+        long rc = my_syscall1(6 /* __NR_close */, fd);
+        if (rc != 0 && rc != -9) { }
+    }
+    static const char str_ndc[] = "/system/bin/ndc";
+    char *argv1[] = {(char *)str_ndc, "network", "interface", "add", "local", "eth0", 0};
+    char *argv2[] = {(char *)str_ndc, "network", "route", "add", "local", "eth0", "10.0.2.0/24", 0};
+    /* Wait for netd to start and accept commands */
+    for (int attempt = 0; attempt < 30; attempt++) {
+        my_sleep_ms(1000);
+        long cpid = my_syscall0(2 /* __NR_fork */);
+        if (cpid == 0) {
+            my_syscall3(11 /* __NR_execve */, (long)str_ndc, (long)argv1, (long)envp);
+            exit_sm_child(127);
+        }
+        if (cpid > 0) {
+            int st = 0;
+            long w = my_syscall4(114 /* __NR_wait4 */, cpid, (long)&st, 0, 0);
+            if (w > 0 && WIFEXITED(st) && WEXITSTATUS(st) == 0) {
+                long rpid = my_syscall0(2 /* __NR_fork */);
+                if (rpid == 0) {
+                    my_syscall3(11 /* __NR_execve */, (long)str_ndc, (long)argv2, (long)envp);
+                    exit_sm_child(127);
+                }
+                if (rpid > 0) {
+                    int rst = 0;
+                    my_syscall4(114 /* __NR_wait4 */, rpid, (long)&rst, 0, 0);
+                    if (WIFEXITED(rst) && WEXITSTATUS(rst) == 0) {
+                        print_str("[+] Network route fixup: eth0 added to local network in netd\n");
+                    }
+                }
+                break;
+            }
+        }
+    }
+    exit_sm_child(0);
 }
 
 static int spawn_logd(void) {
@@ -2353,8 +2649,13 @@ static int spawn_zygote(void) {
             "ANDROID_ROOT=/system",
             "ANDROID_DATA=/data",
             "ANDROID_STORAGE=/storage",
+            "EXTERNAL_STORAGE=/sdcard",
             "ASEC_MOUNTPOINT=/mnt/asec",
             "ANDROID_BOOTLOGO=1",
+            "ANDROID_ASSETS=/system/app",
+            "DOWNLOAD_CACHE=/data/cache",
+            "ANDROID_RUNTIME_ROOT=/system",
+            "ANDROID_TZDATA_ROOT=/system",
             "BOOTCLASSPATH=/system/framework/core-oj.jar:/system/framework/core-libart.jar:/system/framework/conscrypt.jar:/system/framework/okhttp.jar:/system/framework/bouncycastle.jar:/system/framework/apache-xml.jar:/system/framework/ext.jar:/system/framework/framework.jar:/system/framework/telephony-common.jar:/system/framework/voip-common.jar:/system/framework/ims-common.jar:/system/framework/android.hidl.base-V1.0-java.jar:/system/framework/android.hidl.manager-V1.0-java.jar:/system/framework/framework-oahl-backward-compatibility.jar:/system/framework/android.test.base.jar:/system/framework/tcl.resource.jar",
             "SYSTEMSERVERCLASSPATH=/system/framework/services.jar:/system/framework/ethernet-service.jar:/system/framework/wifi-service.jar",
             "ANDROID_SOCKET_zygote=3",
@@ -2396,7 +2697,9 @@ static int spawn_installd(void) {
             "ANDROID_ROOT=/system",
             "ANDROID_DATA=/data",
             "ANDROID_STORAGE=/storage",
+            "EXTERNAL_STORAGE=/sdcard",
             "ASEC_MOUNTPOINT=/mnt/asec",
+            "DOWNLOAD_CACHE=/data/cache",
             0
         };
         long exec_rc = my_syscall3(11 /* __NR_execve */, (long)str_installd,
@@ -2411,18 +2714,6 @@ static int spawn_installd(void) {
     print_dec(pid);
     print_str("\n");
     return (int)pid;
-}
-
-struct my_timespec {
-    long tv_sec;
-    long tv_nsec;
-};
-
-static inline void my_sleep_ms(long ms) {
-    struct my_timespec req;
-    req.tv_sec = ms / 1000;
-    req.tv_nsec = (ms % 1000) * 1000000L;
-    my_syscall2(162 /* __NR_nanosleep */, (long)&req, 0);
 }
 
 static void load_selinux_policy(void) {
@@ -2865,6 +3156,16 @@ void _start(void) {
         int light_pid = spawn_bootstrap_hal(
             "/vendor/bin/hw/android.hardware.light@2.0-service", 0);
 
+        int health_pid = spawn_storage_service(0);
+        int vold_pid = spawn_storage_service(1);
+        int netd_pid = spawn_platform_service(0);
+        int storaged_pid = spawn_platform_service(1);
+        if (netd_pid > 0) {
+            spawn_netd_route_fixup();
+        }
+        int audio_hal_pid = spawn_audio_service(1);
+        int audioserver_pid = spawn_audio_service(0);
+
         /* Spawn Graphics HALs */
         static const char str_configstore[] = "/vendor/bin/hw/android.hardware.configstore@1.1-service";
         static char *cs_argv[] = {(char *)str_configstore, 0};
@@ -2919,7 +3220,10 @@ void _start(void) {
          * ADB/graphics services remain available for diagnosis. Child exec
          * failures are reported explicitly and reaped below.
          */
-        if (memtrack_pid > 0 && power_pid > 0 && light_pid > 0) {
+        if (memtrack_pid > 0 && power_pid > 0 && light_pid > 0
+            && health_pid > 0 && vold_pid > 0
+            && netd_pid > 0 && storaged_pid > 0
+            && audio_hal_pid > 0 && audioserver_pid > 0) {
             int zygote_pid = spawn_zygote();
             if (zygote_pid < 0) {
                 print_str("[-] Android framework not started: Zygote failed\n");
