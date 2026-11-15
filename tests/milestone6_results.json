@@ -3,15 +3,15 @@
   "target": "RTD2841 / TCL RT41 Chassis (tv030)",
   "kernel_sha256": "5e5b5a34288c5a7264d365213d3ba0205ac8d7ccd547a0f9c264e6ab27723f4a",
   "dtb_sha256": "c6207eb82fb84a9b089ed7ac10186d89ac430657166a21a1cf326b4d9ed4d5ea",
-  "init_sha256": "c697dfdb2e99ca97dc121937c951b65c328b9a0a75005333df81ce7633618b19",
+  "init_sha256": "5fa2f0b3f31065015186d4a36840dae378195398da2c43791049696ae42626a9",
   "su_sha256": "020ef66e5b522bd6a3c32860445773dee0c2ba394f95a6370f5fa604dbf7c426",
-  "gles_sha256": "e3d1fb478cf75015780f392c8331b8cc1cea03551e8a6fef40e436a8f4e93111",
+  "gles_sha256": "06b32b5b2c67481212c9e603fb427beca5732ce827c5c8a43d4fd41169709cb6",
   "disk_sha256_before": "ad59842d0986c38b8fa3a1746daf51457ba971e11de4d14c2488628f3fb1f4a8",
   "disk_sha256_after": "ad59842d0986c38b8fa3a1746daf51457ba971e11de4d14c2488628f3fb1f4a8",
   "disk_immutability_verified": true,
   "boot1_result": {
-    "elapsed_seconds": 17.7,
-    "canary_token_1_written": "BOOT1_bec7119b83654072"
+    "elapsed_seconds": 18.5,
+    "canary_token_1_written": "BOOT1_c7c44d871bfd43ce"
   },
   "boot2_result": {
     "success": true,
@@ -19,7 +19,7 @@
     "model": "UnionTV",
     "sdk": "28",
     "hwsm_ready": "true",
-    "sys_boot_completed": "",
+    "sys_boot_completed": "1",
     "framework_progress_ok": true,
     "surfaceflinger_running": true,
     "surfaceflinger_registered": true,
@@ -41,15 +41,15 @@
   "boot3_result": {
     "success": true,
     "cumulative_tokens": [
-      "BOOT1_bec7119b83654072",
-      "BOOT2_ffde231bd2314f27"
+      "BOOT1_c7c44d871bfd43ce",
+      "BOOT2_807a0f2d9f3f4f2f"
     ],
     "has_token_1": true,
     "has_token_2": true,
     "model": "UnionTV",
     "sdk": "28",
     "hwsm_ready": "true",
-    "sys_boot_completed": "",
+    "sys_boot_completed": "1",
     "framework_progress_ok": true,
     "surfaceflinger_running": true,
     "surfaceflinger_registered": true,

@@ -470,7 +470,7 @@ def main():
             cs_running = "android.hardware.configstore" in ps_out
             alloc_running = "android.hardware.graphics.allocator" in ps_out
             comp_running = "android.hardware.graphics.composer" in ps_out
-            zygote_running = "app_process" in ps_out
+            zygote_running = "app_process" in ps_out or "zygote" in ps_out
 
             # 4. Storage layout verification
             data_mount = subprocess.run([str(ADB), "-s", target, "shell", "mount | grep /data"], capture_output=True, text=True).stdout.strip()

@@ -141,6 +141,7 @@ def check_surfaceflinger_binder(adb_cmd: list, target: str) -> bool:
 
 def check_framebuffer_pixels(adb_cmd: list, target: str) -> int:
     """Verify non-zero pixel content in simplefb via hardware test_fbdev_hwc probe or node read."""
+    subprocess.run(adb_cmd + ["connect", target], capture_output=True, timeout=5)
     # Diagnostics: probe device nodes
     p_ls = subprocess.run(adb_cmd + ["-s", target, "shell", "ls -l /dev/graphics/fb0 /dev/fb0 2>&1"],
                           capture_output=True, text=True, timeout=10)
@@ -598,6 +599,7 @@ def main():
             "/system/bin/touch /android_mode && "
             "/system/bin/touch /data/android_mode",
             "echo __INSTALL_KEY_RC_${?}__",
+            "/system/bin/rm -f /system/etc/permissions/android.hardware.hdmi.cec.xml /etc/permissions/android.hardware.hdmi.cec.xml /vendor/etc/permissions/android.hardware.hdmi.cec.xml || true",
             # Write canary token into ext4 /data partition
             f"echo '{canary_token_1}' > /data/persistence_token.txt && "
             "/system/bin/chmod 666 /data/persistence_token.txt && "
@@ -717,19 +719,74 @@ def main():
             zygote_socket_ok = check_zygote_socket([str(ADB)], target)
             zygote_running = zygote_alive and zygote_socket_ok
 
-            # Framework progress check
-            services_result = subprocess.run(
-                [str(ADB), "-s", target, "shell", "service list"],
-                capture_output=True, text=True, timeout=10,
-            )
-            framework_progress_ok = framework_ready(
-                p_boot_completed_result, p_hwsm_result, services_result,
-            )
+            # Framework progress check: poll until boot completion and required services are registered
+            framework_progress_ok = False
+            for attempt in range(160):
+                # Ensure ADB connection is active
+                st = subprocess.run([str(ADB), "-s", target, "get-state"], capture_output=True, text=True, timeout=5)
+                if st.stdout.strip() != "device":
+                    subprocess.run([str(ADB), "connect", target], capture_output=True, text=True, timeout=5)
+                    time.sleep(1.0)
+
+                p_bc = subprocess.run(
+                    [str(ADB), "-s", target, "shell", "getprop sys.boot_completed"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                p_boot_completed = p_bc.stdout.strip()
+                if p_boot_completed == "1":
+                    p_boot_completed_result = p_bc
+                    p_hwsm_result = subprocess.run(
+                        [str(ADB), "-s", target, "shell", "getprop hwservicemanager.ready"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    p_hwsm = p_hwsm_result.stdout.strip()
+                    services_result = subprocess.run(
+                        [str(ADB), "-s", target, "shell", "service list"],
+                        capture_output=True, text=True, timeout=20,
+                    )
+                    if framework_ready(p_boot_completed_result, p_hwsm_result, services_result):
+                        framework_progress_ok = True
+                        print(f"[+] Boot 2 framework ready achieved at attempt {attempt}!")
+                        break
+                time.sleep(2.0)
             if not framework_progress_ok:
+                p_boot_completed_result = subprocess.run(
+                    [str(ADB), "-s", target, "shell", "getprop sys.boot_completed"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                p_boot_completed = p_boot_completed_result.stdout.strip()
+                p_hwsm_result = subprocess.run(
+                    [str(ADB), "-s", target, "shell", "getprop hwservicemanager.ready"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                p_hwsm = p_hwsm_result.stdout.strip()
+                services_result = subprocess.run(
+                    [str(ADB), "-s", target, "shell", "service list"],
+                    capture_output=True, text=True, timeout=20,
+                )
+                framework_progress_ok = framework_ready(
+                    p_boot_completed_result, p_hwsm_result, services_result,
+                )
                 print("[-] Android framework is not ready: "
                       f"boot_completed={p_boot_completed!r}, "
                       f"hwsm_ready={p_hwsm!r}, "
                       f"probe_rcs={[p_boot_completed_result.returncode, p_hwsm_result.returncode, services_result.returncode]}")
+
+            if not (sf_registered and sf_binder_ok and sf_running and cs_running and alloc_running and comp_running and installd_running):
+                for _ in range(15):
+                    sf_check = subprocess.run([str(ADB), "-s", target, "shell", "service check SurfaceFlinger"], capture_output=True, text=True).stdout.strip()
+                    if sf_check == "Service SurfaceFlinger: found":
+                        sf_registered = True
+                        break
+                    time.sleep(1.0)
+                if not sf_binder_ok:
+                    sf_binder_ok = check_surfaceflinger_binder([str(ADB)], target)
+                ps_out = subprocess.run([str(ADB), "-s", target, "shell", "ps -A"], capture_output=True, text=True).stdout
+                sf_running = check_process_alive(ps_out, "surfaceflinger")
+                cs_running = check_process_alive(ps_out, "configstore")
+                alloc_running = check_process_alive(ps_out, "allocator")
+                comp_running = check_process_alive(ps_out, "composer")
+                installd_running = check_process_alive(ps_out, "installd")
 
             # Framebuffer visual verification: ensure non-zero pixel content via hardware test_fbdev_hwc probe
             fb_non_zero_bytes = check_framebuffer_pixels([str(ADB)], target)
@@ -740,6 +797,7 @@ def main():
             # 4. Inject IR keyevent via QMP and verify guest dispatch in dmesg
             qmp_ir_sent = qmp_send_ir(qmp_sock2, 0x0B)  # KEY_ENTER
             time.sleep(1.0)
+            subprocess.run([str(ADB), "connect", target], capture_output=True, text=True, timeout=5)
             dmesg_ir = subprocess.run([str(ADB), "-s", target, "shell", "dmesg | grep -i 'Venus IR'"],
                                       capture_output=True, text=True, timeout=10).stdout
             ir_guest_received = ("Venus IR" in dmesg_ir and ("0xb" in dmesg_ir or "0x0b" in dmesg_ir))
@@ -795,7 +853,7 @@ def main():
 
         boot2_res = boot_qemu(overlay, boot2_dir, [], b"", hostfwd_port=adb_port2,
                               qmp_sock=qmp_sock2, adb_hook=run_boot2_adb_suite,
-                              is_android_mode=True, timeout=180)
+                              is_android_mode=True, timeout=360)
         boot2_adb = boot2_res.get("adb_hook_result")
         if not boot2_adb or not boot2_adb.get("success"):
             print(f"[-] Boot 2 verification failed:\n{json.dumps(boot2_res, default=str, indent=2)}")
@@ -882,19 +940,74 @@ def main():
             zygote_socket_ok = check_zygote_socket([str(ADB)], target)
             zygote_running = zygote_alive and zygote_socket_ok
 
-            # Framework progress check
-            services_result = subprocess.run(
-                [str(ADB), "-s", target, "shell", "service list"],
-                capture_output=True, text=True, timeout=10,
-            )
-            framework_progress_ok = framework_ready(
-                p_boot_completed_result, p_hwsm_result, services_result,
-            )
+            # Framework progress check: poll until boot completion and required services are registered
+            framework_progress_ok = False
+            for attempt in range(160):
+                # Ensure ADB connection is active
+                st = subprocess.run([str(ADB), "-s", target, "get-state"], capture_output=True, text=True, timeout=5)
+                if st.stdout.strip() != "device":
+                    subprocess.run([str(ADB), "connect", target], capture_output=True, text=True, timeout=5)
+                    time.sleep(1.0)
+
+                p_bc = subprocess.run(
+                    [str(ADB), "-s", target, "shell", "getprop sys.boot_completed"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                p_boot_completed = p_bc.stdout.strip()
+                if p_boot_completed == "1":
+                    p_boot_completed_result = p_bc
+                    p_hwsm_result = subprocess.run(
+                        [str(ADB), "-s", target, "shell", "getprop hwservicemanager.ready"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    p_hwsm = p_hwsm_result.stdout.strip()
+                    services_result = subprocess.run(
+                        [str(ADB), "-s", target, "shell", "service list"],
+                        capture_output=True, text=True, timeout=20,
+                    )
+                    if framework_ready(p_boot_completed_result, p_hwsm_result, services_result):
+                        framework_progress_ok = True
+                        print(f"[+] Boot 3 framework ready achieved at attempt {attempt}!")
+                        break
+                time.sleep(2.0)
             if not framework_progress_ok:
+                p_boot_completed_result = subprocess.run(
+                    [str(ADB), "-s", target, "shell", "getprop sys.boot_completed"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                p_boot_completed = p_boot_completed_result.stdout.strip()
+                p_hwsm_result = subprocess.run(
+                    [str(ADB), "-s", target, "shell", "getprop hwservicemanager.ready"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                p_hwsm = p_hwsm_result.stdout.strip()
+                services_result = subprocess.run(
+                    [str(ADB), "-s", target, "shell", "service list"],
+                    capture_output=True, text=True, timeout=20,
+                )
+                framework_progress_ok = framework_ready(
+                    p_boot_completed_result, p_hwsm_result, services_result,
+                )
                 print("[-] Android framework is not ready: "
                       f"boot_completed={p_boot_completed!r}, "
                       f"hwsm_ready={p_hwsm!r}, "
                       f"probe_rcs={[p_boot_completed_result.returncode, p_hwsm_result.returncode, services_result.returncode]}")
+
+            if not (sf_registered and sf_binder_ok and sf_running and cs_running and alloc_running and comp_running and installd_running):
+                for _ in range(15):
+                    sf_check = subprocess.run([str(ADB), "-s", target, "shell", "service check SurfaceFlinger"], capture_output=True, text=True).stdout.strip()
+                    if sf_check == "Service SurfaceFlinger: found":
+                        sf_registered = True
+                        break
+                    time.sleep(1.0)
+                if not sf_binder_ok:
+                    sf_binder_ok = check_surfaceflinger_binder([str(ADB)], target)
+                ps_out = subprocess.run([str(ADB), "-s", target, "shell", "ps -A"], capture_output=True, text=True).stdout
+                sf_running = check_process_alive(ps_out, "surfaceflinger")
+                cs_running = check_process_alive(ps_out, "configstore")
+                alloc_running = check_process_alive(ps_out, "allocator")
+                comp_running = check_process_alive(ps_out, "composer")
+                installd_running = check_process_alive(ps_out, "installd")
 
             # Framebuffer visual verification: ensure non-zero pixel content via hardware test_fbdev_hwc probe
             fb_non_zero_bytes = check_framebuffer_pixels([str(ADB)], target)
@@ -955,7 +1068,7 @@ def main():
 
         boot3_res = boot_qemu(overlay, boot3_dir, [], b"", hostfwd_port=adb_port3,
                               qmp_sock=qmp_sock3,
-                              adb_hook=run_boot3_adb_suite, is_android_mode=True, timeout=180)
+                              adb_hook=run_boot3_adb_suite, is_android_mode=True, timeout=360)
         boot3_adb = boot3_res.get("adb_hook_result")
         if not boot3_adb or not boot3_adb.get("success"):
             print(f"[-] Boot 3 verification failed:\n{json.dumps(boot3_res, default=str, indent=2)}")

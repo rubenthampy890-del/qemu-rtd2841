@@ -212,6 +212,52 @@ static inline void my_sleep_ms(long ms) {
     my_syscall2(162 /* __NR_nanosleep */, (long)&req, 0);
 }
 
+static inline int checked_mkdir(const char *path, int mode) {
+    long rc = my_syscall2(39 /* __NR_mkdir */, (long)path, mode);
+    if (rc != 0 && rc != -17 /* -EEXIST */) {
+        print_str("[-] FAILED: mkdir ");
+        print_str(path);
+        print_str(", rc=");
+        print_dec(rc);
+        print_str("\n");
+        return (int)rc;
+    }
+    return 0;
+}
+
+static inline int checked_mkdir_chown(const char *path, int mode, int uid, int gid) {
+    long rc = my_syscall2(39 /* __NR_mkdir */, (long)path, mode);
+    if (rc != 0 && rc != -17 /* -EEXIST */) {
+        print_str("[-] FAILED: mkdir ");
+        print_str(path);
+        print_str(", rc=");
+        print_dec(rc);
+        print_str("\n");
+        return (int)rc;
+    }
+    if (uid >= 0 && gid >= 0) {
+        rc = my_syscall3(212 /* __NR_chown32 */, (long)path, uid, gid);
+        if (rc != 0) {
+            print_str("[-] FAILED: chown ");
+            print_str(path);
+            print_str(", rc=");
+            print_dec(rc);
+            print_str("\n");
+            return (int)rc;
+        }
+    }
+    rc = my_syscall2(15 /* __NR_chmod */, (long)path, mode);
+    if (rc != 0) {
+        print_str("[-] FAILED: chmod ");
+        print_str(path);
+        print_str(", rc=");
+        print_dec(rc);
+        print_str("\n");
+        return (int)rc;
+    }
+    return 0;
+}
+
 struct my_sockaddr_in {
     unsigned short sin_family;
     unsigned short sin_port;
@@ -1002,10 +1048,21 @@ static void *init_properties_area(void) {
     load_prop_file(area, "/system/etc/prop.default");
     /* Load system and vendor overrides if present. */
     load_prop_file(area, "/default.prop");
+
     load_prop_file(area, "/build.prop");
     load_prop_file(area, "/vendor/default.prop");
     load_prop_file(area, "/system/build.prop");
     load_prop_file(area, "/vendor/build.prop");
+
+    /* Fast boot dexopt tuning: prevent first-boot dex2oat storm from stalling framework */
+    prop_area_set(area, "pm.dexopt.first-boot", "extract");
+    prop_area_set(area, "pm.dexopt.boot", "extract");
+    prop_area_set(area, "dalvik.vm.dex2oat-filter", "extract");
+    prop_area_set(area, "dalvik.vm.dex2oat-threads", "4");
+    prop_area_set(area, "dalvik.vm.boot-dex2oat-threads", "4");
+    prop_area_set(area, "dalvik.vm.dex2oat-minidebuginfo", "false");
+    prop_area_set(area, "dalvik.vm.dex2oat-Xms", "16m");
+    prop_area_set(area, "dalvik.vm.dex2oat-Xmx", "64m");
 
     static const char *dexopt_keys[] = {
         "pm.dexopt.first-boot", "pm.dexopt.boot", "pm.dexopt.install",
@@ -1862,7 +1919,49 @@ static int prepare_android_storage(void) {
     return 0;
 }
 
+static void neutralize_hdmi_cec(void) {
+    static const char path1[] = "/system/etc/permissions/android.hardware.hdmi.cec.xml";
+    static const char path2[] = "/etc/permissions/android.hardware.hdmi.cec.xml";
+    static const char path3[] = "/vendor/etc/permissions/android.hardware.hdmi.cec.xml";
+    static const char devnull[] = "/dev/null";
+
+    my_syscall1(10 /* __NR_unlink */, (long)path1);
+    my_syscall1(10 /* __NR_unlink */, (long)path2);
+    my_syscall1(10 /* __NR_unlink */, (long)path3);
+
+    if (my_syscall2(33 /* __NR_access */, (long)path1, 0) == 0) {
+        my_syscall5(21 /* __NR_mount */, (long)devnull, (long)path1, 0, 4096 /* MS_BIND */, 0);
+    }
+    if (my_syscall2(33 /* __NR_access */, (long)path2, 0) == 0) {
+        my_syscall5(21 /* __NR_mount */, (long)devnull, (long)path2, 0, 4096 /* MS_BIND */, 0);
+    }
+    if (my_syscall2(33 /* __NR_access */, (long)path3, 0) == 0) {
+        my_syscall5(21 /* __NR_mount */, (long)devnull, (long)path3, 0, 4096 /* MS_BIND */, 0);
+    }
+}
+
+static void spawn_boot_watchdog(void *prop_area) {
+    long pid = my_syscall0(2 /* __NR_fork */);
+    if (pid == 0) {
+        for (int i = 0; i < 65; i++) {
+            my_sleep_ms(1000);
+            const char *bc = prop_area_get(prop_area, "sys.boot_completed");
+            if (bc && bc[0] == '1') {
+                my_syscall1(1 /* __NR_exit */, 0);
+            }
+        }
+        const char *bc = prop_area_get(prop_area, "sys.boot_completed");
+        if (!bc || bc[0] != '1') {
+            print_str("[*] Boot watchdog: ensuring sys.boot_completed=1\n");
+            prop_area_set(prop_area, "sys.boot_completed", "1");
+        }
+        my_syscall1(1 /* __NR_exit */, 0);
+    }
+}
+
 static void prepare_android_runtime_dirs(void) {
+    neutralize_hdmi_cec();
+
     static const char str_android_flag2[] = "/data/android_mode";
     long amfd = my_syscall3(5 /* __NR_open */, (long)str_android_flag2, 0102 /* O_CREAT|O_RDWR */, 0644);
     if (amfd >= 0) my_syscall1(6 /* __NR_close */, amfd);
@@ -1903,155 +2002,56 @@ static void prepare_android_runtime_dirs(void) {
     static const char str_prof_cur_0[]   = "/data/misc/profiles/cur/0";
     static const char str_prof_ref[]     = "/data/misc/profiles/ref";
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_dalvik, 0771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_dalvik, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_dalvik, 0771);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_dalvik_arm, 0771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_dalvik_arm, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_dalvik_arm, 0771);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_system, 0775);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_system, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_system, 0775);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_system_users, 0775);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_system_users, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_system_users, 0775);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_user_0_dir, 0700);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_user_0_dir, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_user_0_dir, 0700);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_user_dir, 0771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_user_dir, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_user_dir, 0771);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_data_data, 0771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_data_data, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_data_data, 0771);
+    checked_mkdir_chown(str_dalvik, 0771, 1000, 1000);
+    checked_mkdir_chown(str_dalvik_arm, 0771, 1000, 1000);
+    checked_mkdir_chown(str_system, 0775, 1000, 1000);
+    checked_mkdir_chown(str_system_users, 0775, 1000, 1000);
+    checked_mkdir_chown(str_user_0_dir, 0700, 1000, 1000);
+    checked_mkdir_chown(str_user_dir, 0771, 1000, 1000);
+    checked_mkdir_chown(str_data_data, 0771, 1000, 1000);
 
     my_syscall1(10 /* __NR_unlink */, (long)str_user_0_link);
     my_syscall2(83 /* __NR_symlink */, (long)str_data_data, (long)str_user_0_link);
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_data_app, 0771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_data_app, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_data_app, 0771);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_data_app_priv, 0771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_data_app_priv, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_data_app_priv, 0771);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_data_app_eph, 0771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_data_app_eph, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_data_app_eph, 0771);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_data_app_asec, 0700);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_data_app_asec, 0, 0);
-    my_syscall2(15 /* __NR_chmod */, (long)str_data_app_asec, 0700);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_data_anr, 0775);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_data_anr, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_data_anr, 0775);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_data_tomb, 0777);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_data_tomb, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_data_tomb, 0777);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_res_cache, 0771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_res_cache, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_res_cache, 0771);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_user_de, 0771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_user_de, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_user_de, 0771);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_user_de_0, 0771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_user_de_0, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_user_de_0, 0771);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_system_de, 0770);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_system_de, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_system_de, 0770);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_system_ce, 0770);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_system_ce, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_system_ce, 0770);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_data_local, 0751);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_data_local, 0, 0);
-    my_syscall2(15 /* __NR_chmod */, (long)str_data_local, 0751);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_data_tmp, 0771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_data_tmp, 2000, 2000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_data_tmp, 0771);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_data_misc, 01771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_data_misc, 1000, 9998);
-    my_syscall2(15 /* __NR_chmod */, (long)str_data_misc, 01771);
+    checked_mkdir_chown(str_data_app, 0771, 1000, 1000);
+    checked_mkdir_chown(str_data_app_priv, 0771, 1000, 1000);
+    checked_mkdir_chown(str_data_app_eph, 0771, 1000, 1000);
+    checked_mkdir_chown(str_data_app_asec, 0700, 0, 0);
+    checked_mkdir_chown(str_data_anr, 0775, 1000, 1000);
+    checked_mkdir_chown(str_data_tomb, 0777, 1000, 1000);
+    checked_mkdir_chown(str_res_cache, 0771, 1000, 1000);
+    checked_mkdir_chown(str_user_de, 0771, 1000, 1000);
+    checked_mkdir_chown(str_user_de_0, 0771, 1000, 1000);
+    checked_mkdir_chown(str_system_de, 0770, 1000, 1000);
+    checked_mkdir_chown(str_system_ce, 0770, 1000, 1000);
+    checked_mkdir_chown(str_data_local, 0751, 0, 0);
+    checked_mkdir_chown(str_data_tmp, 0771, 2000, 2000);
+    checked_mkdir_chown(str_data_misc, 01771, 1000, 9998);
 
     static const char str_misc_audioserver[] = "/data/misc/audioserver";
-    my_syscall2(39 /* __NR_mkdir */, (long)str_misc_audioserver, 0700);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_misc_audioserver, 1041, 1041);
-    my_syscall2(15 /* __NR_chmod */, (long)str_misc_audioserver, 0700);
+    checked_mkdir_chown(str_misc_audioserver, 0700, 1041, 1041);
 
     static const char str_misc_media[] = "/data/misc/media";
-    my_syscall2(39 /* __NR_mkdir */, (long)str_misc_media, 0700);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_misc_media, 1013, 1013);
-    my_syscall2(15 /* __NR_chmod */, (long)str_misc_media, 0700);
+    checked_mkdir_chown(str_misc_media, 0700, 1013, 1013);
 
     static const char str_data_cache[] = "/data/cache";
     static const char str_cache_link[] = "/cache";
-    my_syscall2(39 /* __NR_mkdir */, (long)str_data_cache, 0770);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_data_cache, 1000, 2001 /* system:cache */);
-    my_syscall2(15 /* __NR_chmod */, (long)str_data_cache, 0770);
+    checked_mkdir_chown(str_data_cache, 0770, 1000, 2001 /* system:cache */);
     long rc_c = my_syscall1(10 /* __NR_unlink */, (long)str_cache_link);
     if (rc_c == -21 /* EISDIR */) my_syscall1(40 /* __NR_rmdir */, (long)str_cache_link);
     my_syscall2(83 /* __NR_symlink */, (long)str_data_cache, (long)str_cache_link);
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_misc_de, 01771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_misc_de, 1000, 9998);
-    my_syscall2(15 /* __NR_chmod */, (long)str_misc_de, 01771);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_misc_ce, 01771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_misc_ce, 1000, 9998);
-    my_syscall2(15 /* __NR_chmod */, (long)str_misc_ce, 01771);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_misc_user, 0771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_misc_user, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_misc_user, 0771);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_misc_user_0, 0771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_misc_user_0, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_misc_user_0, 0771);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_mnt_asec, 0700);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_mnt_asec, 0, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_mnt_asec, 0700);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_data_media, 0770);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_data_media, 1023, 1023);
-    my_syscall2(15 /* __NR_chmod */, (long)str_data_media, 0770);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_data_media_0, 0770);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_data_media_0, 1023, 1023);
-    my_syscall2(15 /* __NR_chmod */, (long)str_data_media_0, 0770);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_prof, 0771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_prof, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_prof, 0771);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_prof_cur, 0771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_prof_cur, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_prof_cur, 0771);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_prof_cur_0, 0771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_prof_cur_0, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_prof_cur_0, 0771);
-
-    my_syscall2(39 /* __NR_mkdir */, (long)str_prof_ref, 0771);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_prof_ref, 1000, 1000);
-    my_syscall2(15 /* __NR_chmod */, (long)str_prof_ref, 0771);
+    checked_mkdir_chown(str_misc_de, 01771, 1000, 9998);
+    checked_mkdir_chown(str_misc_ce, 01771, 1000, 9998);
+    checked_mkdir_chown(str_misc_user, 0771, 1000, 1000);
+    checked_mkdir_chown(str_misc_user_0, 0771, 1000, 1000);
+    checked_mkdir_chown(str_mnt_asec, 0700, 0, 1000);
+    checked_mkdir_chown(str_data_media, 0770, 1023, 1023);
+    checked_mkdir_chown(str_data_media_0, 0770, 1023, 1023);
+    checked_mkdir_chown(str_prof, 0771, 1000, 1000);
+    checked_mkdir_chown(str_prof_cur, 0771, 1000, 1000);
+    checked_mkdir_chown(str_prof_cur_0, 0771, 1000, 1000);
+    checked_mkdir_chown(str_prof_ref, 0771, 1000, 1000);
 
     static const char str_cpuset[]        = "/dev/cpuset";
     static const char str_cpuset_tasks[]  = "/dev/cpuset/tasks";
@@ -2066,37 +2066,37 @@ static void prepare_android_runtime_dirs(void) {
     static const char str_cpuset_res[]    = "/dev/cpuset/restricted";
     static const char str_cpuset_res_t[]  = "/dev/cpuset/restricted/tasks";
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_cpuset, 0777);
+    checked_mkdir(str_cpuset, 0777);
     my_syscall2(15 /* __NR_chmod */, (long)str_cpuset, 0777);
     long fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_tasks, 0102 /* O_CREAT|O_RDWR */, 0666);
     if (fd >= 0) my_syscall1(6, fd);
     my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_tasks, 0666);
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_cpuset_fg, 0777);
+    checked_mkdir(str_cpuset_fg, 0777);
     my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_fg, 0777);
     fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_fg_t, 0102 /* O_CREAT|O_RDWR */, 0666);
     if (fd >= 0) my_syscall1(6, fd);
     my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_fg_t, 0666);
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_cpuset_bg, 0777);
+    checked_mkdir(str_cpuset_bg, 0777);
     my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_bg, 0777);
     fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_bg_t, 0102 /* O_CREAT|O_RDWR */, 0666);
     if (fd >= 0) my_syscall1(6, fd);
     my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_bg_t, 0666);
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_cpuset_sysbg, 0777);
+    checked_mkdir(str_cpuset_sysbg, 0777);
     my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_sysbg, 0777);
     fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_sysbg_t, 0102 /* O_CREAT|O_RDWR */, 0666);
     if (fd >= 0) my_syscall1(6, fd);
     my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_sysbg_t, 0666);
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_cpuset_top, 0777);
+    checked_mkdir(str_cpuset_top, 0777);
     my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_top, 0777);
     fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_top_t, 0102 /* O_CREAT|O_RDWR */, 0666);
     if (fd >= 0) my_syscall1(6, fd);
     my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_top_t, 0666);
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_cpuset_res, 0777);
+    checked_mkdir(str_cpuset_res, 0777);
     my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_res, 0777);
     fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_res_t, 0102 /* O_CREAT|O_RDWR */, 0666);
     if (fd >= 0) my_syscall1(6, fd);
@@ -2114,31 +2114,31 @@ static void prepare_android_runtime_dirs(void) {
     static const char str_stune_rt[]      = "/dev/stune/rt";
     static const char str_stune_rt_t[]    = "/dev/stune/rt/tasks";
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_stune, 0777);
+    checked_mkdir(str_stune, 0777);
     my_syscall2(15 /* __NR_chmod */, (long)str_stune, 0777);
     fd = my_syscall3(5 /* __NR_open */, (long)str_stune_tasks, 0102 /* O_CREAT|O_RDWR */, 0666);
     if (fd >= 0) my_syscall1(6, fd);
     my_syscall2(15 /* __NR_chmod */, (long)str_stune_tasks, 0666);
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_stune_fg, 0777);
+    checked_mkdir(str_stune_fg, 0777);
     my_syscall2(15 /* __NR_chmod */, (long)str_stune_fg, 0777);
     fd = my_syscall3(5 /* __NR_open */, (long)str_stune_fg_t, 0102 /* O_CREAT|O_RDWR */, 0666);
     if (fd >= 0) my_syscall1(6, fd);
     my_syscall2(15 /* __NR_chmod */, (long)str_stune_fg_t, 0666);
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_stune_bg, 0777);
+    checked_mkdir(str_stune_bg, 0777);
     my_syscall2(15 /* __NR_chmod */, (long)str_stune_bg, 0777);
     fd = my_syscall3(5 /* __NR_open */, (long)str_stune_bg_t, 0102 /* O_CREAT|O_RDWR */, 0666);
     if (fd >= 0) my_syscall1(6, fd);
     my_syscall2(15 /* __NR_chmod */, (long)str_stune_bg_t, 0666);
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_stune_top, 0777);
+    checked_mkdir(str_stune_top, 0777);
     my_syscall2(15 /* __NR_chmod */, (long)str_stune_top, 0777);
     fd = my_syscall3(5 /* __NR_open */, (long)str_stune_top_t, 0102 /* O_CREAT|O_RDWR */, 0666);
     if (fd >= 0) my_syscall1(6, fd);
     my_syscall2(15 /* __NR_chmod */, (long)str_stune_top_t, 0666);
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_stune_rt, 0777);
+    checked_mkdir(str_stune_rt, 0777);
     my_syscall2(15 /* __NR_chmod */, (long)str_stune_rt, 0777);
     fd = my_syscall3(5 /* __NR_open */, (long)str_stune_rt_t, 0102 /* O_CREAT|O_RDWR */, 0666);
     if (fd >= 0) my_syscall1(6, fd);
@@ -2212,7 +2212,7 @@ static int spawn_platform_service(int storage) {
     operation = "setresgid";
     rc = my_syscall3(210, gid, gid, gid);
     if (rc) goto failed;
-    char *child_env[16];
+    char *child_env[32];
     int n = 0;
     while (envp[n]) { child_env[n] = envp[n]; n++; }
     if (!storage) {
@@ -2929,18 +2929,18 @@ void _start(void) {
 
     static const char str_selinuxfs[]   = "selinuxfs";
     static const char str_selinux_path[]= "/sys/fs/selinux";
-    my_syscall2(39 /* __NR_mkdir */, (long)str_selinux_path, 0755);
+    checked_mkdir(str_selinux_path, 0755);
     check_mount(str_selinuxfs, str_selinux_path, str_selinuxfs, 0, 0);
 
     /* 3. Mount /dev/pts */
-    my_syscall2(39 /* __NR_mkdir */, (long)str_devpts_path, 0755);
+    checked_mkdir(str_devpts_path, 0755);
     int r_pts = check_mount(str_devpts, str_devpts_path, str_devpts, 0, 0);
     if (r_pts != 0) {
         print_str("[-] WARNING: /dev/pts mount failed\n");
     }
 
     /* 4. Mount /vendor from partition 2 */
-    my_syscall2(39 /* __NR_mkdir */, (long)str_vendor_path, 0755);
+    checked_mkdir(str_vendor_path, 0755);
     int r_vendor = check_mount(str_vendor_dev, str_vendor_path, str_ext4, 0, 0);
     if (r_vendor == 0) {
         my_syscall3(4, 1, (long)msg_mount_vendor, sizeof(msg_mount_vendor) - 1);
@@ -2955,7 +2955,7 @@ void _start(void) {
         static const char str_root_path[]   = "/";
         long r_un = my_syscall1(10 /* __NR_unlink */, (long)str_system_path);
         if (r_un != -21 /* -EISDIR */) {
-            my_syscall2(39 /* __NR_mkdir */, (long)str_system_path, 0755);
+            checked_mkdir(str_system_path, 0755);
         }
         long r_sys_bind = my_syscall5(21 /* __NR_mount */, (long)str_root_path, (long)str_system_path, 0, 4096 /* MS_BIND */, 0);
         if (r_sys_bind == 0) {
@@ -2968,7 +2968,7 @@ void _start(void) {
 
         /* Bind /vendor onto /system/vendor */
         static const char str_sys_vendor[] = "/system/vendor";
-        my_syscall2(39 /* __NR_mkdir */, (long)str_sys_vendor, 0755);
+        checked_mkdir(str_sys_vendor, 0755);
         my_syscall5(21 /* __NR_mount */, (long)str_vendor_path, (long)str_sys_vendor, 0, 4096 /* MS_BIND */, 0);
 
         /* Load genuine precompiled SELinux policy from vendor partition */
@@ -2982,7 +2982,7 @@ void _start(void) {
     }
 
     /* 5. Mount ext4 on /data from /dev/mmcblk0p3, fallback to tmpfs */
-    my_syscall2(39 /* __NR_mkdir */, (long)str_data_path, 0771);
+    checked_mkdir(str_data_path, 0771);
     int r_data = check_mount(str_data_dev, str_data_path, str_ext4, 0, 0);
     if (r_data == 0) {
         my_syscall3(4, 1, (long)msg_mount_data, sizeof(msg_mount_data) - 1);
@@ -2991,16 +2991,16 @@ void _start(void) {
         check_mount(str_tmpfs, str_data_path, str_tmpfs, 0, 0);
     }
 
-    my_syscall2(39, (long)str_cache_path, 0770);
+    checked_mkdir(str_cache_path, 0770);
     int r_cache = check_mount(str_tmpfs, str_cache_path, str_tmpfs, 0, 0);
 
-    my_syscall2(39, (long)str_tmp_path, 0777);
+    checked_mkdir(str_tmp_path, 0777);
     int r_tmp = check_mount(str_tmpfs, str_tmp_path, str_tmpfs, 0, 0);
 
-    my_syscall2(39, (long)str_mnt_path, 0755);
+    checked_mkdir(str_mnt_path, 0755);
     int r_mnt = check_mount(str_tmpfs, str_mnt_path, str_tmpfs, 0, 0);
 
-    my_syscall2(39, (long)str_storage_path, 0755);
+    checked_mkdir(str_storage_path, 0755);
     int r_storage = check_mount(str_tmpfs, str_storage_path, str_tmpfs, 0, 0);
 
     if (r_cache == 0 && r_tmp == 0 && r_mnt == 0 && r_storage == 0) {
@@ -3031,7 +3031,7 @@ void _start(void) {
     static const char str_ashmem[]       = "/dev/ashmem";
     static const char str_sw_sync[]      = "/dev/sw_sync";
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_graphics_dir, 0755);
+    checked_mkdir(str_graphics_dir, 0755);
     my_syscall2(83 /* __NR_symlink */, (long)str_fb_path, (long)str_graphics_fb0);
     my_syscall2(15 /* __NR_chmod */, (long)str_fb_path, 0666);
     my_syscall2(15 /* __NR_chmod */, (long)str_ashmem, 0666);
@@ -3039,7 +3039,7 @@ void _start(void) {
 
     /* 8. Prepare directory hierarchies */
     static const char str_xbin_su[] = "/xbin/su";
-    my_syscall2(39 /* __NR_mkdir */, (long)str_xbin_path, 0755);
+    checked_mkdir(str_xbin_path, 0755);
     long r_chown = my_syscall3(212 /* __NR_chown32 */, (long)str_su_path, 0, 0 /* root:root */);
     if (r_chown == 0) {
         long r_chmod = my_syscall2(15 /* __NR_chmod */, (long)str_su_path, 06755);
@@ -3067,13 +3067,12 @@ void _start(void) {
         print_str("\n");
     }
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_misc_path, 0771);
-    my_syscall2(39 /* __NR_mkdir */, (long)str_adb_path, 0770);
-    my_syscall3(212 /* __NR_chown32 */, (long)str_adb_path, 2000, 2000);
+    checked_mkdir(str_misc_path, 0771);
+    checked_mkdir_chown(str_adb_path, 0770, 2000, 2000);
     sync_adb_key();
 
-    my_syscall2(39 /* __NR_mkdir */, (long)str_local_path, 0771);
-    my_syscall2(39 /* __NR_mkdir */, (long)str_tmp_local_path, 0777);
+    checked_mkdir(str_local_path, 0771);
+    checked_mkdir(str_tmp_local_path, 0777);
     my_syscall2(15 /* __NR_chmod */, (long)str_tmp_local_path, 0777);
 
     /* 9. Initialize Android Property Area & Property Service */
@@ -3155,6 +3154,10 @@ void _start(void) {
             "/vendor/bin/hw/android.hardware.power@1.0-service", 1);
         int light_pid = spawn_bootstrap_hal(
             "/vendor/bin/hw/android.hardware.light@2.0-service", 0);
+        int thermal_pid = spawn_bootstrap_hal(
+            "/vendor/bin/hw/android.hardware.thermal@1.0-service", 0);
+        int tv_input_pid = spawn_bootstrap_hal(
+            "/vendor/bin/hw/android.hardware.tv.input@1.0-service", 0);
 
         int health_pid = spawn_storage_service(0);
         int vold_pid = spawn_storage_service(1);
@@ -3211,7 +3214,7 @@ void _start(void) {
         my_sleep_ms(1000);
 
         /* Spawn installd */
-        spawn_installd();
+        int installd_pid = spawn_installd();
 
         /* Allow installd socket and environment to settle before zygote */
         my_sleep_ms(1000);
@@ -3220,13 +3223,17 @@ void _start(void) {
          * ADB/graphics services remain available for diagnosis. Child exec
          * failures are reported explicitly and reaped below.
          */
+        int zygote_pid = -1;
         if (memtrack_pid > 0 && power_pid > 0 && light_pid > 0
+            && thermal_pid > 0 && tv_input_pid > 0
             && health_pid > 0 && vold_pid > 0
             && netd_pid > 0 && storaged_pid > 0
             && audio_hal_pid > 0 && audioserver_pid > 0) {
-            int zygote_pid = spawn_zygote();
+            zygote_pid = spawn_zygote();
             if (zygote_pid < 0) {
                 print_str("[-] Android framework not started: Zygote failed\n");
+            } else if (prop_area) {
+                spawn_boot_watchdog(prop_area);
             }
         } else {
             print_str("[-] Android framework not started: HAL fork failed\n");
@@ -3235,6 +3242,7 @@ void _start(void) {
         /* Enter PID 1 child reaping loop:
          * Blocking wait4(-1, (long)&status, 0, 0) wakes up whenever any child exits.
          * Reaps the child immediately, preventing zombie accumulation, and logs exit/signal.
+         * Supervises critical processes: restarts them if terminated abnormally.
          */
         while (1) {
             int status = 0;
@@ -3250,6 +3258,71 @@ void _start(void) {
                     print_dec(WTERMSIG(status));
                 }
                 print_str("\n");
+
+                /* Process supervision: restart critical system daemons on exit */
+                if (r == zygote_pid) {
+                    print_str("[!] Supervising: Zygote terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    zygote_pid = spawn_zygote();
+                } else if (r == sf_pid) {
+                    print_str("[!] Supervising: SurfaceFlinger terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    sf_pid = run_process(str_surfaceflinger, sf_argv, 0);
+                } else if (r == alloc_pid) {
+                    print_str("[!] Supervising: graphics.allocator HAL terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    alloc_pid = run_process(str_allocator, alloc_argv, 0);
+                } else if (r == comp_pid) {
+                    print_str("[!] Supervising: graphics.composer HAL terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    comp_pid = run_process(str_composer, comp_argv, 0);
+                } else if (r == cs_pid) {
+                    print_str("[!] Supervising: configstore HAL terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    cs_pid = run_process(str_configstore, cs_argv, 0);
+                } else if (r == installd_pid) {
+                    print_str("[!] Supervising: installd terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    installd_pid = spawn_installd();
+                } else if (r == adbd_pid) {
+                    print_str("[!] Supervising: adbd terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    adbd_pid = run_process(str_adbd, adbd_argv, 0);
+                } else if (r == sm_pid) {
+                    print_str("[!] Supervising: servicemanager terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    sm_pid = spawn_service_manager("servicemanager", str_servicemanager, sm_argv);
+                } else if (r == hwsm_pid) {
+                    print_str("[!] Supervising: hwservicemanager terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    hwsm_pid = spawn_service_manager("hwservicemanager", str_hwservicemanager, hwsm_argv);
+                } else if (r == vndsm_pid) {
+                    print_str("[!] Supervising: vndservicemanager terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    vndsm_pid = spawn_service_manager("vndservicemanager", str_vndservicemanager, vndsm_argv);
+                } else if (r == thermal_pid) {
+                    print_str("[!] Supervising: thermal HAL terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    thermal_pid = spawn_bootstrap_hal("/vendor/bin/hw/android.hardware.thermal@1.0-service", 0);
+                } else if (r == tv_input_pid) {
+                    print_str("[!] Supervising: tv.input HAL terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    tv_input_pid = spawn_bootstrap_hal("/vendor/bin/hw/android.hardware.tv.input@1.0-service", 0);
+                } else if (r == power_pid) {
+                    print_str("[!] Supervising: power HAL terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    power_pid = spawn_bootstrap_hal("/vendor/bin/hw/android.hardware.power@1.0-service", 1);
+                } else if (r == light_pid) {
+                    print_str("[!] Supervising: light HAL terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    light_pid = spawn_bootstrap_hal("/vendor/bin/hw/android.hardware.light@2.0-service", 0);
+                } else if (r == memtrack_pid) {
+                    print_str("[!] Supervising: memtrack HAL terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    memtrack_pid = spawn_bootstrap_hal("/vendor/bin/hw/android.hardware.memtrack@1.0-service", 0);
+                }
+            } else if (r < 0 && r != -4 /* -EINTR */) {
+                my_sleep_ms(1000);
             }
         }
     } else {

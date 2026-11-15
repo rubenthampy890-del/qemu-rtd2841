@@ -350,7 +350,7 @@ static void rtd2841_irda_write(void *opaque, hwaddr addr, uint64_t val, unsigned
         break;
     case REG_IRDA_SR:
         /* Writing bit 0 (or bit 1) clears IRDVF / repeat flag */
-        if (val & 0x01) {
+        if (val & 0x03) {
             s->sr &= ~0x03;
             s->iso_misc_isr &= ~(1 << 5);
             rtd2841_ir_update_irq(s);

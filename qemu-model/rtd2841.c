@@ -114,6 +114,18 @@ static void rtd2841_eth_tx(RTD2841EthState *s)
 
         if (dma_addr == 0 || dma_addr >= RTD2841_RAM_SIZE ||
             frag_len > RTD2841_RAM_SIZE - dma_addr) {
+            opts1 &= ~RTK_DESC_OWN;
+            opts1_le = cpu_to_le32(opts1);
+            address_space_write(&address_space_memory, desc_addr,
+                                MEMTXATTRS_UNSPECIFIED, &opts1_le, 4);
+            if (opts1 & RTK_DESC_EOR) {
+                s->cur_tx = 0;
+            } else {
+                s->cur_tx = (s->cur_tx + 1) % RTD2841_ETH_NUM_TX_DESC;
+            }
+            pkt_len = 0;
+            s->intr_status |= 0x0008; /* TxErr */
+            rtd2841_eth_update_irq(s);
             break;
         }
         if (opts1 & RTK_DESC_FS) {
@@ -226,7 +238,9 @@ static ssize_t rtd2841_eth_receive(NetClientState *nc, const uint8_t *buf,
 
     if (dma_addr == 0 || dma_addr >= RTD2841_RAM_SIZE ||
         size > RTD2841_RAM_SIZE - dma_addr) {
-        return 0;
+        s->intr_status |= 0x0080 | 0x0002;
+        rtd2841_eth_update_irq(s);
+        return size;
     }
 
     address_space_write(&address_space_memory, dma_addr,
