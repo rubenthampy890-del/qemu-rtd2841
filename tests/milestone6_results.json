@@ -10,8 +10,8 @@
   "disk_sha256_after": "ad59842d0986c38b8fa3a1746daf51457ba971e11de4d14c2488628f3fb1f4a8",
   "disk_immutability_verified": true,
   "boot1_result": {
-    "elapsed_seconds": 18.5,
-    "canary_token_1_written": "BOOT1_c7c44d871bfd43ce"
+    "elapsed_seconds": 19.8,
+    "canary_token_1_written": "BOOT1_b64fe3350a3b4f69"
   },
   "boot2_result": {
     "success": true,
@@ -41,8 +41,8 @@
   "boot3_result": {
     "success": true,
     "cumulative_tokens": [
-      "BOOT1_c7c44d871bfd43ce",
-      "BOOT2_807a0f2d9f3f4f2f"
+      "BOOT1_b64fe3350a3b4f69",
+      "BOOT2_56bcdbde45db44d3"
     ],
     "has_token_1": true,
     "has_token_2": true,
