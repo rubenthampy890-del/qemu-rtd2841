@@ -7,9 +7,9 @@ TCL RT41 chassis, board profile `tv030`: four Cortex-A53 CPU cores running
 32-bit ARM (AArch32) software, a vendor Linux 4.4.3 kernel, and Android 9 Pie
 ("UnionTV"). QEMU runs the emulated hardware on your computer.
 
-##  Android TV on the emulated board
+## Android TV on the emulated board
 
-We booted TCL’s Android userspace on the emulated RT41 and navigated the
+I booted TCL’s Android userspace on the emulated RT41 and navigated the
 Projectivy Home app grid on a development Mac using a disk with onboarding
 already completed.
 
@@ -22,31 +22,19 @@ returned to the blue splash and then to Welcome while Android kept running.
 
 In one fresh-disk experiment, lowering the resolution and disabling the
 launcher’s measurement service allowed onboarding to reach the Home grid.
-The launcher later timed out again. We have yet to isolate why the saved
+The launcher later timed out again. I have yet to isolate why the saved
 session stayed usable or verify repeatable navigation from a fresh disk on
-macOS or Linux. We have no measured first-boot success rate. Public CI covers
+macOS or Linux. I have no measured first-boot success rate. Public CI covers
 hardware and firmware-independent checks. It cannot exercise this private
 firmware boot.
 
-## Report a test run
-
-**Report your experience**, including successful runs, in a
-[GitHub issue](https://github.com/rubenthampy890-del/qemu-rtd2841/issues/new).
-Include your OS and CPU, the output of `git rev-parse --short HEAD`, the
-command you ran, and whether you tried the hardware demo or Android.
-For Android, include the firmware and launcher versions, whether your disk was
-fresh or reused, and the last screen you reached. Could an arrow key move focus
-between Home tiles? After restarting with the same session, could you navigate
-again? If the screen looped, describe the sequence and approximate time.
-Share a short relevant log excerpt with personal details removed. Keep APKs,
-firmware and disk images private.
-
 ## First run on a new computer
 
-Allow about 20 GB of free disk space and 8 GB of RAM for the hardware build.
-Install the packages for your OS, then continue to **Clone and run the demo**.
+Allow about 20 GB of free disk space and 8 GB of RAM. Complete steps 1–3 for the hardware demo. Continue to [Boot Android TV](#boot-android-tv) if you have firmware.
 
-### macOS
+### 1. Install the packages for your OS
+
+**macOS**
 
 Install Apple’s Command Line Tools (`xcode-select --install` if missing) and
 [Homebrew](https://brew.sh/). Then run:
@@ -58,11 +46,11 @@ export PYTHON="$(brew --prefix python@3.14)/bin/python3.14"
 
 `pkgconf` supplies the `pkg-config` command. `arm-none-eabi-binutils` supplies
 `arm-none-eabi-as`, `arm-none-eabi-ld`, and `arm-none-eabi-objcopy`, which build
-our ARM diagnostic programs. The versioned Python path avoids selecting an
+the ARM diagnostic programs. The versioned Python path avoids selecting an
 older system Python. Package names are listed in the
 [Homebrew catalogue](https://formulae.brew.sh/formula/).
 
-### Ubuntu 24.04 LTS
+**Ubuntu 24.04 LTS**
 
 Use a desktop session for the graphical window. A server without a desktop can
 still run the automated tests.
@@ -108,7 +96,7 @@ other distributions, match the dependencies and use Python 3.12 or newer.
 
 </details>
 
-### Clone and run the demo
+### 2. Clone the repository
 
 Use a checkout path without spaces or colons. Run on the host:
 
@@ -117,32 +105,54 @@ mkdir -p "$HOME/qemu-work"
 cd "$HOME/qemu-work"
 git clone https://github.com/rubenthampy890-del/qemu-rtd2841.git
 cd qemu-rtd2841
+```
+
+### 3. Build the board and check the display
+
+```bash
 ./scripts/setup-qemu.sh --demo
 ```
 
-Omit `--demo` for a terminal-only test run. Repeating the command reuses the
+Eight color bars confirm the display demo is running. Omit `--demo` for a terminal-only test run. Repeating the command reuses the
 download and compiled objects. On a fresh clone, the two public hardware tiers
 run and the firmware-dependent Linux test is skipped. Close the display window
 when you have seen the bars.
 
-For **Android TV**, bring a matching patched kernel and a prepared Android
-eMMC disk. The procedure below starts at that point. If you only have a TCL
-OTA, extracting and preparing an Android disk is still a development workflow.
-Building the Projectivy edition also requires a locally supplied launcher APK
-(`--launcher-apk` on the ROM builder) and the matching ARM32 SwiftShader libraries.
+## Boot Android TV
 
-## Start Android on a prepared computer
+### 1. Choose the inputs you have
 
-From the repository directory, run this host command:
+Start in the repository directory after building the emulator above. You need a
+matching patched ARM32 kernel. Choose **one** disk preparation path:
+
+- **Prepared eMMC disk** — go straight to step 2.
+- **Emulator-ready ext4 partitions** — use the import command under step 2. The system partition needs a working `/init`.
+- **Extracted RT41 firmware** — [build the disk from extracted files](#firmware-and-storage), then return to step 2.
+- **TCL OTA only** — partition extraction and preparation are still a development workflow. I haven’t verified a fresh OTA-to-Home procedure.
+
+### 2. Start one session
+
+**Prepared disk.** Replace the two absolute paths with your own. Give the
+session a new filename on first boot.
 
 ```bash
-./start_qemu_android.sh
+./start_qemu_android.sh --kernel "/absolute/path/to/zImage" --system "/absolute/path/to/emmc.raw" --overlay "./my-tv.qcow2"
 ```
 
-The launcher opens a QEMU display window and prints the kernel log in Terminal.
-Keep Terminal open while using the TV. Give Android a few minutes to start on
-the software renderer. On first use, Projectivy may show its Welcome screens. If
-Android asks about access to TV listings, choose your preference.
+If the kernel and disk are already in the default locations
+(`output/kernel/zImage` and `output/emmc.raw`), you can run
+`./start_qemu_android.sh` directly. Use `./run.sh --check` to inspect discovery.
+
+**Separate partitions.** To import the system and vendor images and boot them, run:
+
+```bash
+./start_qemu_android.sh --kernel "/absolute/path/to/zImage" --system "/absolute/path/to/system.img" --vendor "/absolute/path/to/vendor.img"
+```
+
+Save the printed base disk and session paths. Guest Linux mounts the partitions.
+Keep the host terminal open while QEMU is running.
+
+### 3. Navigate, close, and resume
 
 | In the QEMU window | Action |
 |---|---|
@@ -160,34 +170,16 @@ Some TV apps only support remote focus. Use the arrow keys and Return in those
 apps. The screen uses software rendering. The emulated TV currently has no
 registered ALSA sound card for speaker output.
 
-**Where the files go.** The Android launcher needs the patched QEMU executable,
-the tv030 DTB, a compatible ARM32 kernel (normally `output/kernel/zImage`),
-and a prepared eMMC disk (normally `output/emmc.raw`). On the prepared
-development machine it also finds the saved Projectivy setup. The launcher
-writes changes to a separate qcow2 session file and prints its location.
-Keep the session, its backing files, and their paths together between runs.
-A new clone needs the hardware build above and privately supplied Android assets.
+Close the QEMU window to stop. To resume, use the same kernel, base disk and
+session. For imported partitions, use the prepared-disk command with the
+printed paths. Keep the base disk at its original location.
 
-**Use your own prepared eMMC disk.** From the repository directory on the host:
+## Report a test run
 
-```bash
-./start_qemu_android.sh --kernel "/absolute/path/to/zImage" --system "/absolute/path/to/emmc.raw" --overlay "./my-tv.qcow2"
-```
-
-Choose a new filename for the overlay on first use. Repeat the same command to
-resume. QEMU attaches the disk as eMMC and guest Linux mounts its partitions.
-This requires no host mount or administrator access. To import separate raw ext4
-partitions with an emulator-ready root and `/init`, use:
-
-```bash
-./start_qemu_android.sh --system "/absolute/path/to/system.img" --vendor "/absolute/path/to/vendor.img"
-```
-
-The import creates a 4 GiB GPT disk under a new `output/firmware-*` directory.
-Save the printed base disk path and use it with the preceding eMMC command on
-later boots. A TCL `Update.img` needs extraction and preparation first.
-Use `./run.sh --check` to see which files and tools the launcher found.
-Close the display window to stop QEMU.
+1. Record your host OS, CPU, command, and commit (`git rev-parse --short HEAD`).
+2. For the hardware demo, say whether the tests passed and eight bars appeared. For Android, include the firmware and launcher versions, fresh or reused disk, and the last screen you saw.
+3. If Home opened, try moving focus with an arrow key. Restart with the same session and check it again. If the splash repeated, describe the sequence and how long it took.
+4. [Open a GitHub issue](https://github.com/rubenthampy890-del/qemu-rtd2841/issues/new) with those results. Successful runs help me too. Include a short relevant log excerpt with personal details removed. Keep firmware, APKs and disk images private.
 
 ## What you can run
 
@@ -220,19 +212,19 @@ listed in [TCL_Kernel_OpenSource](https://github.com/TCLOpenSource/TCL_Kernel_Op
 This kernel source is separate from the proprietary Android system and vendor
 binaries.
 
-For source inspection, clone it separately from the public QEMU build:
+**1. Get the source.** For source inspection, clone it separately from the public QEMU build:
 
 ```bash
 cd "$HOME/qemu-work"
 git clone https://github.com/TCLOpenSource/rtk2841.git
 ```
 
-The repository includes [the emulator kernel patch](patches/linux-4.4.3-rtd2841-qemu.patch)
+**2. Check the kernel requirements.** The repository includes [the emulator kernel patch](patches/linux-4.4.3-rtd2841-qemu.patch)
 and [a kernel build helper](scripts/build_kernel.sh). They are development inputs,
 not a verified one-command fresh-host kernel recipe. In particular:
 
 - `build_kernel.sh` does **not** apply that patch. Its default source discovery
-  also contains the original author's local path; a new machine needs explicit
+  also contains the path from my development machine; a new machine needs explicit
   `--src` and `--output` paths.
 - The correct vendor source revision, configuration, cross-compiler, emulator
   patch, and embedded device tree must agree. A stock vendor build is not
@@ -241,7 +233,7 @@ not a verified one-command fresh-host kernel recipe. In particular:
   These are not installed by the hardware quickstart. Linux kernel source also
   requires care with case-sensitive filenames on macOS.
 
-Inspect the helper's options without starting a build:
+**3. Inspect the helper’s options** without starting a build:
 
 ```bash
 cd "$HOME/qemu-work/qemu-rtd2841"
@@ -254,13 +246,20 @@ No proprietary TV firmware or prepared Android disk image is distributed here.
 Use firmware you are authorized to obtain from your device or the manufacturer.
 The TCL kernel links above supply **source code**, not an Android firmware image.
 
-If you already have the extracted RT41 firmware and ARM32 renderer libraries,
+**1. Prepare the inputs.** If you already have the extracted RT41 firmware and ARM32 renderer libraries,
 you can build an emulator disk in a separate checkout. Use that checkout's
 `staging/` and `output/` for this build: the builder writes intermediate images
 to `staging/` and replaces the disk at the selected output path. Keep saved
 sessions with their original backing disk.
 
-From that checkout on the host, replace the four example input paths:
+This needs the ARM32 compiler (`arm-none-eabi-gcc`) and ext4 tools
+(`mke2fs`, `debugfs`, `e2fsck`) in addition to the QEMU build tools.
+The renderer directory must contain `libEGL.so`, `libGLES_CM.so`, and
+`libGLESv2.so` for this Android guest. On macOS the builder uses a temporary
+case-sensitive disk image for vendor filenames. The system extraction is copied
+before removing apps. Allow space for that copy as well as the partition images.
+
+**2. Build the disk.** From that checkout on the host, replace the four example input paths:
 
 ```bash
 python3 tools/build_debloated_rom.py --skip-update-img \
@@ -271,29 +270,19 @@ python3 tools/build_debloated_rom.py --skip-update-img \
     --output-dir "./output/new-tv"
 ```
 
-This needs the ARM32 compiler (`arm-none-eabi-gcc`) and ext4 tools
-(`mke2fs`, `debugfs`, `e2fsck`) in addition to the QEMU build tools.
-The renderer directory must contain `libEGL.so`, `libGLES_CM.so`, and
-`libGLESv2.so` for this Android guest. On macOS the builder uses a temporary
-case-sensitive disk image for vendor filenames. The system extraction is copied
-before removing apps. Allow space for that copy as well as the partition images.
-
-Then use the matching kernel to start the disk:
-
-```bash
-./start_qemu_android.sh --kernel "/path/to/zImage" \
-    --system "./output/new-tv/emmc.raw" --overlay "./output/new-tv/session.qcow2"
-```
+**3. Boot the result.** Use `output/new-tv/emmc.raw` as the prepared disk in [Boot Android TV](#boot-android-tv).
 
 ### Linux verification with already-prepared assets
 
-If you already have a compatible emulator kernel and prepared **raw** eMMC image,
+**1. Set the inputs.** If you already have a compatible emulator kernel and prepared **raw** eMMC image,
 set their absolute paths below. Replace the two example paths before running:
 
 ```bash
 export KERNEL_BIN="/absolute/path/to/zImage"
 export STORAGE_IMAGE="/absolute/path/to/emmc.raw"
 ```
+
+**2. Run the diagnostic boot.**
 
 ```bash
 (

@@ -24,7 +24,7 @@ export QEMU_DISPLAY=cocoa
 
 `pkgconf` supplies the `pkg-config` command. `arm-none-eabi-binutils` supplies
 `arm-none-eabi-as`, `arm-none-eabi-ld`, and `arm-none-eabi-objcopy`, which build
-our ARM diagnostic programs. The versioned Python path avoids selecting an
+the ARM diagnostic programs. The versioned Python path avoids selecting an
 older system Python. Package names are listed in the
 [Homebrew catalogue](https://formulae.brew.sh/formula/).
 
