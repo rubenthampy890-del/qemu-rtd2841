@@ -7,7 +7,7 @@ TCL RT41 chassis, board profile `tv030`: four Cortex-A53 CPU cores running
 32-bit ARM (AArch32) software, a vendor Linux 4.4.3 kernel, and Android 9 Pie
 ("UnionTV"). QEMU runs the emulated hardware on your computer.
 
-## Phase 4 milestone — Android TV on the emulated board
+##  — Android TV on the emulated board
 
 We booted TCL’s Android userspace on the emulated RT41 and navigated the
 Projectivy Home app grid on a development Mac with a prepared disk. First
