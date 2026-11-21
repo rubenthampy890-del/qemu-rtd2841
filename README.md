@@ -13,9 +13,9 @@ I booted TCL’s Android userspace on the emulated RT41 and navigated the
 Projectivy Home app grid on a development Mac using a disk with onboarding
 already completed.
 
-[![Projectivy Home running on the emulated RT41](docs/media/projectivy-home.jpg)](docs/media/rt41-projectivy-home.mp4)
+[![Projectivy Home running on the emulated RT41](docs/media/projectivy-home.jpg)](https://cdn.jsdelivr.net/gh/rubenthampy890-del/qemu-rtd2841@7cc5737/docs/media/rt41-projectivy-home.mp4)
 
-[Watch the 52-second saved-session boot and navigation demo](docs/media/rt41-projectivy-home.mp4).
+[Watch the 52-second saved-session boot and navigation demo](https://cdn.jsdelivr.net/gh/rubenthampy890-del/qemu-rtd2841@7cc5737/docs/media/rt41-projectivy-home.mp4).
 I recorded this on my Mac in two parts. The edit skips portions of the boot
 wait and shows navigation at its recorded speed.
 
