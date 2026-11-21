@@ -14,3 +14,11 @@ artifacts/
 .agents/
 tools/pytclfirmware/
 tests/firmware_smp_test.bin
+
+# Locally supplied launcher and intermediate Android stub outputs.
+/apks/ProjectivyLauncher.apk
+/tools/stubs/BiReportStub/bin/
+/tools/stubs/BiReportStub/gen/
+/tools/stubs/BiReportStub/obj/
+/tools/stubs/BiReportStub/*.apk
+/tools/stubs/BiReportStub/*.idsig

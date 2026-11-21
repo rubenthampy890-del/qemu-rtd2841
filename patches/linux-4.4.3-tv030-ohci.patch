@@ -1,0 +1,54 @@
+--- a/drivers/usb/host/ohci-platform.c
++++ b/drivers/usb/host/ohci-platform.c
+@@ -155,6 +155,17 @@
+ #endif
+ };
+ 
++/* Select the emulated, always-powered OHCI_TOP on this board only. */
++static bool tv030_emulated_ohci;
++static int __init tv030_ohci_setup(char *str)
++{
++	tv030_emulated_ohci = true;
++	return 1;
++}
++__setup("opendtv.ohci=1", tv030_ohci_setup);
++
++static struct usb_ohci_pdata tv030_qemu_pdata;
++
+ static int ohci_platform_probe(struct platform_device *dev)
+ {
+ 	struct usb_hcd *hcd;
+@@ -174,8 +185,13 @@
+ 	 * Use reasonable defaults so platforms don't have to provide these
+ 	 * with DT probing on ARM.
+ 	 */
+-	if (!pdata)
++	if (tv030_emulated_ohci) {
++		if (strcmp(dev->name, "ohci-platform"))
++			return -ENODEV;
++		pdata = &tv030_qemu_pdata;
++	} else if (!pdata) {
+ 		pdata = &ohci_platform_defaults;
++	}
+ 
+ 	err = dma_coerce_mask_and_coherent(&dev->dev, DMA_BIT_MASK(32));
+ 	if (err)
+@@ -513,7 +529,17 @@
+ 	return platform_driver_register(&ohci_platform_driver);
+ }
+ #if defined(CONFIG_USER_INITCALL_USB) && !defined(MODULE)
+-user_initcall_grp("USB", ohci_platform_init);
++static int __init tv030_ohci_boot(void)
++{
++	return tv030_emulated_ohci ? ohci_platform_init() : 0;
++}
++device_initcall(tv030_ohci_boot);
++
++static int ohci_platform_deferred_init(void)
++{
++	return tv030_emulated_ohci ? 0 : ohci_platform_init();
++}
++user_initcall_grp("USB", ohci_platform_deferred_init);
+ #else
+ module_init(ohci_platform_init);
+ #endif

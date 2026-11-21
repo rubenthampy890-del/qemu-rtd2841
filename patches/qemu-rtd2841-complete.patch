@@ -26,7 +26,7 @@ diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
 index 4445f16..6ea4880 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -731,3 +731,15 @@ config AXIADO_EVK
+@@ -731,3 +731,17 @@ config AXIADO_EVK
      default y
      depends on TCG && ARM
      select AXIADO_SOC
@@ -42,6 +42,8 @@ index 4445f16..6ea4880 100644
 +    select PTIMER
 +    select SDHCI
 +    select OR_IRQ
++    select USB_OHCI_SYSBUS
++    select USB_HID
 diff --git a/hw/arm/meson.build b/hw/arm/meson.build
 index bcc068d..59086e4 100644
 --- a/hw/arm/meson.build
@@ -56,10 +58,10 @@ index bcc068d..59086e4 100644
  arm_common_ss.add(when: 'CONFIG_XLNX_ZYNQMP_ARM', if_true: files('xlnx-zynqmp.c', 'xlnx-zcu102.c'))
 diff --git a/hw/arm/rtd2841.c b/hw/arm/rtd2841.c
 new file mode 100644
-index 0000000..c2f24a0
+index 0000000..48d022a
 --- /dev/null
 +++ b/hw/arm/rtd2841.c
-@@ -0,0 +1,1268 @@
+@@ -0,0 +1,1289 @@
 +/*
 + * Realtek RTD2841 SoC & TCL Smart TV Board Model (tv030)
 + *
@@ -853,6 +855,9 @@ index 0000000..c2f24a0
 +            object_property_set_bool(cpuobj, "aarch64", false, &error_fatal);
 +        }
 +
++        /* The tv030 DT specifies a 27 MHz ARM architected timer. */
++        qdev_prop_set_uint64(DEVICE(cpuobj), "cntfrq", 27000000);
++
 +        object_property_set_int(cpuobj, "mp-affinity",
 +                                arm_build_mp_affinity(i, RTD2841_NUM_CPUS),
 +                                &error_fatal);
@@ -961,6 +966,24 @@ index 0000000..c2f24a0
 +    sysbus_connect_irq(SYS_BUS_DEVICE(&s->eth), 0,
 +                       qdev_get_gpio_in(gicdev,
 +                           RTD2841_GIC_SPI_TO_GPIO(RTD2841_ETH_SPI)));
++
++    /* Full/low-speed USB host, vendor OHCI_TOP resource and GIC SPI 21. */
++    {
++        SysBusDevice *ohci = SYS_BUS_DEVICE(qdev_new("sysbus-ohci"));
++
++        if (!sysbus_realize_and_unref(ohci, errp)) {
++            return;
++        }
++        sysbus_mmio_map(ohci, 0, 0x18013400);
++        sysbus_connect_irq(ohci, 0, qdev_get_gpio_in(gicdev, 21));
++        if (defaults_enabled()) {
++            BusState *bus = QLIST_FIRST(&DEVICE(ohci)->child_bus);
++
++            if (!qdev_realize_and_unref(qdev_new("usb-mouse"), bus, errp)) {
++                return;
++            }
++        }
++    }
 +
 +    /* eMMC / SDHCI controller @ 0x18010800 */
 +    {

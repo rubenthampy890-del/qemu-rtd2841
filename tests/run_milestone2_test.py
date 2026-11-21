@@ -316,9 +316,8 @@ def main():
         verify_dir = out_dir / "verify"
         verify_dir.mkdir()
 
-        # Clean up any leftover adb server from prior runs before spawning QEMU
-        subprocess.run([str(ADB), "kill-server"], capture_output=True)
-        time.sleep(1)
+        # Preserve host ADB server for active user desktop sessions (no kill-server)
+        time.sleep(0.5)
 
         adb_port = find_free_port()
         print(f"[*] Dynamic host ADB port allocated: {adb_port}")
@@ -473,7 +472,8 @@ def main():
     finally:
         server.shutdown()
         server.server_close()
-        subprocess.run([str(ADB), "kill-server"], capture_output=True)
+        if "adb_port" in locals():
+            subprocess.run([str(ADB), "disconnect", f"127.0.0.1:{adb_port}"], capture_output=True)
 
 
 if __name__ == "__main__":

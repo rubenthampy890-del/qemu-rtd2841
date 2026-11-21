@@ -805,6 +805,9 @@ static void rtd2841_soc_realize(DeviceState *dev, Error **errp)
             object_property_set_bool(cpuobj, "aarch64", false, &error_fatal);
         }
 
+        /* The tv030 DT specifies a 27 MHz ARM architected timer. */
+        qdev_prop_set_uint64(DEVICE(cpuobj), "cntfrq", 27000000);
+
         object_property_set_int(cpuobj, "mp-affinity",
                                 arm_build_mp_affinity(i, RTD2841_NUM_CPUS),
                                 &error_fatal);
@@ -913,6 +916,24 @@ static void rtd2841_soc_realize(DeviceState *dev, Error **errp)
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->eth), 0,
                        qdev_get_gpio_in(gicdev,
                            RTD2841_GIC_SPI_TO_GPIO(RTD2841_ETH_SPI)));
+
+    /* Full/low-speed USB host, vendor OHCI_TOP resource and GIC SPI 21. */
+    {
+        SysBusDevice *ohci = SYS_BUS_DEVICE(qdev_new("sysbus-ohci"));
+
+        if (!sysbus_realize_and_unref(ohci, errp)) {
+            return;
+        }
+        sysbus_mmio_map(ohci, 0, 0x18013400);
+        sysbus_connect_irq(ohci, 0, qdev_get_gpio_in(gicdev, 21));
+        if (defaults_enabled()) {
+            BusState *bus = QLIST_FIRST(&DEVICE(ohci)->child_bus);
+
+            if (!qdev_realize_and_unref(qdev_new("usb-mouse"), bus, errp)) {
+                return;
+            }
+        }
+    }
 
     /* eMMC / SDHCI controller @ 0x18010800 */
     {

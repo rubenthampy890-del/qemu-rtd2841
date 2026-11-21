@@ -219,6 +219,58 @@ static inline int checked_mkdir(const char *path, int mode) {
         print_str(path);
         print_str(", rc=");
         print_dec(rc);
+        print_str(", errno=");
+        print_dec(-rc);
+        print_str("\n");
+        return (int)rc;
+    }
+    return 0;
+}
+
+static inline int checked_chmod(const char *path, int mode) {
+    long rc = my_syscall2(15 /* __NR_chmod */, (long)path, mode);
+    if (rc != 0) {
+        print_str("[-] FAILED: chmod ");
+        print_str(path);
+        print_str(", rc=");
+        print_dec(rc);
+        print_str(", errno=");
+        print_dec(-rc);
+        print_str("\n");
+        return (int)rc;
+    }
+    return 0;
+}
+
+static inline int checked_touch_chmod(const char *path, int mode) {
+    long fd = my_syscall3(5 /* __NR_open */, (long)path, 0102 /* O_CREAT|O_RDWR */, mode);
+    if (fd < 0) {
+        print_str("[-] FAILED: open ");
+        print_str(path);
+        print_str(", rc=");
+        print_dec(fd);
+        print_str(", errno=");
+        print_dec(-fd);
+        print_str("\n");
+        return (int)fd;
+    }
+    my_syscall1(6 /* __NR_close */, fd);
+    return checked_chmod(path, mode);
+}
+
+static inline int checked_symlink(const char *target, const char *linkpath) {
+    long r = my_syscall1(10 /* __NR_unlink */, (long)linkpath);
+    if (r == -21 /* EISDIR */) my_syscall1(40 /* __NR_rmdir */, (long)linkpath);
+    long rc = my_syscall2(83 /* __NR_symlink */, (long)target, (long)linkpath);
+    if (rc != 0 && rc != -17 /* -EEXIST */) {
+        print_str("[-] FAILED: symlink ");
+        print_str(linkpath);
+        print_str(" -> ");
+        print_str(target);
+        print_str(", rc=");
+        print_dec(rc);
+        print_str(", errno=");
+        print_dec(-rc);
         print_str("\n");
         return (int)rc;
     }
@@ -232,6 +284,8 @@ static inline int checked_mkdir_chown(const char *path, int mode, int uid, int g
         print_str(path);
         print_str(", rc=");
         print_dec(rc);
+        print_str(", errno=");
+        print_dec(-rc);
         print_str("\n");
         return (int)rc;
     }
@@ -242,6 +296,8 @@ static inline int checked_mkdir_chown(const char *path, int mode, int uid, int g
             print_str(path);
             print_str(", rc=");
             print_dec(rc);
+            print_str(", errno=");
+            print_dec(-rc);
             print_str("\n");
             return (int)rc;
         }
@@ -252,6 +308,8 @@ static inline int checked_mkdir_chown(const char *path, int mode, int uid, int g
         print_str(path);
         print_str(", rc=");
         print_dec(rc);
+        print_str(", errno=");
+        print_dec(-rc);
         print_str("\n");
         return (int)rc;
     }
@@ -357,7 +415,7 @@ static const char str_product[]     = "/product";
 
 static const char str_sh[]          = "/bin/sh";
 static const char str_path[]        = "PATH=/sbin:/system/sbin:/system/bin:/system/xbin:/vendor/bin:/vendor/xbin:/bin";
-static const char str_ld[]          = "LD_LIBRARY_PATH=/system/lib:/vendor/lib";
+static const char str_ld[] __attribute__((unused))          = "LD_LIBRARY_PATH=/system/lib:/vendor/lib";
 static const char str_root[]        = "ANDROID_ROOT=/system";
 static const char str_data[]        = "ANDROID_DATA=/data";
 static const char str_storage[]     = "ANDROID_STORAGE=/storage";
@@ -368,9 +426,10 @@ static const char str_assets[]      = "ANDROID_ASSETS=/system/app";
 static const char str_cache[]       = "DOWNLOAD_CACHE=/data/cache";
 static const char str_runtime_root[]= "ANDROID_RUNTIME_ROOT=/system";
 static const char str_tzdata_root[] = "ANDROID_TZDATA_ROOT=/system";
-static const char str_egl[]         = "ro.hardware.egl=android";
+static char str_egl[sizeof("ro.hardware.egl=swiftshader")] =
+    "ro.hardware.egl=android";
 static const char str_gralloc[]     = "ro.hardware.gralloc=default";
-static const char str_hwc[]         = "ro.hardware.hwcomposer=default";
+static const char str_hwc[] __attribute__((unused))         = "ro.hardware.hwcomposer=default";
 static const char str_term[]        = "TERM=vt100";
 static const char str_home[]        = "HOME=/";
 
@@ -954,6 +1013,31 @@ static void load_prop_file(void *area, const char *path) {
     }
 }
 
+static int file_is_readable(const char *path) {
+    long fd = my_syscall3(5 /* __NR_open */, (long)path, 0 /* O_RDONLY */, 0);
+    if (fd < 0) {
+        return 0;
+    }
+    long close_rc = my_syscall1(6 /* __NR_close */, fd);
+    if (close_rc != 0) {
+        print_str("[-] FAILED: close EGL driver probe ");
+        print_str(path);
+        print_str(", rc=");
+        print_dec(close_rc);
+        print_str("\n");
+        return 0;
+    }
+    return 1;
+}
+
+static int swiftshader_driver_available(void) {
+    static const char egl[] = "/vendor/lib/egl/libEGL_swiftshader.so";
+    static const char gles1[] = "/vendor/lib/egl/libGLESv1_CM_swiftshader.so";
+    static const char gles2[] = "/vendor/lib/egl/libGLESv2_swiftshader.so";
+    return file_is_readable(egl) && file_is_readable(gles1) &&
+           file_is_readable(gles2);
+}
+
 static int is_android_mode(void);
 
 static void *init_properties_area(void) {
@@ -1015,7 +1099,19 @@ static void *init_properties_area(void) {
     prop_area_set(area, "dalvik.vm.heapminfree", "512k");
     prop_area_set(area, "dalvik.vm.heapmaxfree", "8m");
     prop_area_set(area, "ro.sf.lcd_density", "240");
-    prop_area_set(area, "ro.hardware.egl", "android");
+    if (swiftshader_driver_available()) {
+        if (prop_area_set(area, "ro.hardware.egl", "swiftshader") != 0) {
+            print_str("[-] FAILED: set ro.hardware.egl=swiftshader\n");
+            return 0;
+        }
+        my_memcpy(str_egl, "ro.hardware.egl=swiftshader",
+                  sizeof("ro.hardware.egl=swiftshader"));
+    } else {
+        if (prop_area_set(area, "ro.hardware.egl", "android") != 0) {
+            print_str("[-] FAILED: set ro.hardware.egl=android\n");
+            return 0;
+        }
+    }
     prop_area_set(area, "ro.hardware.gralloc", "default");
     prop_area_set(area, "ro.hardware.hwcomposer", "default");
     prop_area_set(area, "service.adb.tcp.port", "5555");
@@ -1054,6 +1150,18 @@ static void *init_properties_area(void) {
     load_prop_file(area, "/system/build.prop");
     load_prop_file(area, "/vendor/build.prop");
 
+    /* Render Android views at a quarter of the scanout pixel count. Keep
+     * their layout in dp unchanged (1080p/240 dpi -> 540p/120 dpi).
+     * WindowManager lets an explicit user display override take priority. */
+    if (is_android_mode() && swiftshader_driver_available()) {
+        if (prop_area_set(area, "ro.config.size_override", "960,540") != 0 ||
+            prop_area_set(area, "ro.config.density_override", "120") != 0 ||
+            prop_area_set(area, "debug.hwui.renderer", "opengl") != 0) {
+            print_str("[-] Cannot configure the Android software display\n");
+            return 0;
+        }
+    }
+
     /* Fast boot dexopt tuning: prevent first-boot dex2oat storm from stalling framework */
     prop_area_set(area, "pm.dexopt.first-boot", "extract");
     prop_area_set(area, "pm.dexopt.boot", "extract");
@@ -1083,6 +1191,15 @@ static void *init_properties_area(void) {
     prop_area_set(area, "ro.property_service.version", "2");
     prop_area_set(area, "ro.adb.secure", "0");
     prop_area_set(area, "ro.boot.selinux", "permissive");
+    prop_area_set(area, "ro.bluetooth.disabled", "true");
+    prop_area_set(area, "bluetooth.enable_timeout_ms", "500");
+    prop_area_set(area, "ro.setupwizard.mode", "DISABLED");
+    prop_area_set(area, "ro.setupwizard.network_required", "false");
+
+    /* Pre-seed boot animation completion to unblock WindowManagerService performEnableScreen */
+    prop_area_set(area, "init.svc.bootanim", "stopped");
+    prop_area_set(area, "service.bootanim.exit", "1");
+    prop_area_set(area, "sys.tcl.stopbootanim", "1");
 
     my_syscall3(212 /* __NR_chown32 */, (long)str_prop_file, 0, 0);
     long r_chmod = my_syscall2(15 /* __NR_chmod */, (long)str_prop_file, 0444);
@@ -1393,6 +1510,8 @@ failed:
     return (int)rc;
 }
 
+static int create_control_socket(const char *path, int type, int mode, int uid, int gid);
+
 /* Stock healthd.rc and vold.rc identities. These services run as root;
  * unlike the system-UID HALs above, they need privileged kernel operations.
  * Spawn success is not registration success. PID 1 reports child failures.
@@ -1415,6 +1534,47 @@ static int spawn_storage_service(int is_vold) {
         rc = my_syscall1(6, fd);
         if (rc != 0 && rc != -9) goto failed;
     }
+
+    int fd_vold = -1;
+    int fd_cryptd = -1;
+    if (is_vold) {
+        operation = "create vold socket";
+        fd_vold = create_control_socket("/dev/socket/vold", 1 /* SOCK_STREAM */, 0660, 0, 1000);
+        if (fd_vold < 0) {
+            rc = fd_vold;
+            goto failed;
+        }
+        if (fd_vold != 3) {
+            operation = "dup2 vold socket";
+            rc = my_syscall2(63 /* __NR_dup2 */, fd_vold, 3);
+            if (rc < 0) {
+                my_syscall1(6 /* __NR_close */, fd_vold);
+                goto failed;
+            }
+            my_syscall1(6 /* __NR_close */, fd_vold);
+            fd_vold = 3;
+        }
+
+        operation = "create cryptd socket";
+        fd_cryptd = create_control_socket("/dev/socket/cryptd", 1 /* SOCK_STREAM */, 0660, 0, 1000);
+        if (fd_cryptd < 0) {
+            rc = fd_cryptd;
+            my_syscall1(6 /* __NR_close */, fd_vold);
+            goto failed;
+        }
+        if (fd_cryptd != 4) {
+            operation = "dup2 cryptd socket";
+            rc = my_syscall2(63 /* __NR_dup2 */, fd_cryptd, 4);
+            if (rc < 0) {
+                my_syscall1(6 /* __NR_close */, fd_vold);
+                my_syscall1(6 /* __NR_close */, fd_cryptd);
+                goto failed;
+            }
+            my_syscall1(6 /* __NR_close */, fd_cryptd);
+            fd_cryptd = 4;
+        }
+    }
+
     unsigned int groups[] = {1000, 3010};
     operation = "setgroups32";
     rc = my_syscall2(206, is_vold ? 0 : 2, (long)groups);
@@ -1431,8 +1591,21 @@ static int spawn_storage_service(int is_vold) {
         rc = my_syscall3(314, 1, 0, (2 << 13) | 2);
         if (rc != 0) goto failed;
     }
+
+    char *child_env[32];
+    int n = 0;
+    while (envp[n] && n < 28) {
+        child_env[n] = envp[n];
+        n++;
+    }
+    if (is_vold) {
+        child_env[n++] = "ANDROID_SOCKET_vold=3";
+        child_env[n++] = "ANDROID_SOCKET_cryptd=4";
+    }
+    child_env[n] = 0;
+
     operation = "execve";
-    rc = my_syscall3(11, (long)cmd, (long)argv, (long)envp);
+    rc = my_syscall3(11, (long)cmd, (long)argv, (long)child_env);
 failed:
     print_str("[-] Storage service startup failed: ");
     print_str(cmd);
@@ -1797,7 +1970,46 @@ static void sync_adb_key(void) {
     }
 }
 
+static int cmdline_has_token(const char *buf, long n, const char *token) {
+    long len = (long)my_strlen(token);
+    for (long i = 0; i + len <= n; i++) {
+        int start = i == 0 || buf[i - 1] == ' ' || buf[i - 1] == '\t';
+        int end = i + len == n || buf[i + len] == ' ' ||
+                  buf[i + len] == '\t' || buf[i + len] == '\n';
+        if (start && end && my_strncmp(buf + i, token, len) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int is_android_mode(void) {
+    static const char str_cmdline[] = "/proc/cmdline";
+    char buf[512];
+    long n = -1;
+    long fd = my_syscall3(5 /* __NR_open */, (long)str_cmdline,
+                          0 /* O_RDONLY */, 0);
+    if (fd >= 0) {
+        n = my_syscall3(3 /* __NR_read */, fd, (long)buf,
+                        sizeof(buf) - 1);
+        if (n < 0) {
+            print_str("[-] FAILED: read /proc/cmdline, rc=");
+            print_dec(n);
+            print_str("\n");
+        }
+        long close_rc = my_syscall1(6 /* __NR_close */, fd);
+        if (close_rc != 0) {
+            print_str("[-] FAILED: close /proc/cmdline, rc=");
+            print_dec(close_rc);
+            print_str("\n");
+            n = -1;
+        }
+        if (n > 0) {
+            buf[n] = '\0';
+            if (cmdline_has_token(buf, n, "android=0")) return 0;
+        }
+    }
+
     static const char str_android_flag1[] = "/android_mode";
     static const char str_android_flag2[] = "/data/android_mode";
     static const char str_android_flag3[] = "/system/android_mode";
@@ -1811,20 +2023,10 @@ static int is_android_mode(void) {
         return 1;
     }
 
-    static const char str_cmdline[] = "/proc/cmdline";
-    long fd = my_syscall3(5 /* __NR_open */, (long)str_cmdline, 0 /* O_RDONLY */, 0);
-    if (fd < 0) return 0;
-    char buf[512];
-    long n = my_syscall3(3 /* __NR_read */, fd, (long)buf, sizeof(buf) - 1);
-    my_syscall1(6 /* __NR_close */, fd);
     if (n <= 0) return 0;
-    buf[n] = '\0';
-    for (long i = 0; i < n; i++) {
-        if (i <= n - 9 && my_strncmp(buf + i, "android=1", 9) == 0) return 1;
-        if (i <= n - 12 && my_strncmp(buf + i, "mode=android", 12) == 0) return 1;
-        if (i <= n - 24 && my_strncmp(buf + i, "androidboot.mode=android", 24) == 0) return 1;
-    }
-    return 0;
+    return cmdline_has_token(buf, n, "android=1") ||
+           cmdline_has_token(buf, n, "mode=android") ||
+           cmdline_has_token(buf, n, "androidboot.mode=android");
 }
 
 /* Android 9 rootdir/init.rc creates these views before Zygote forks.
@@ -1860,6 +2062,30 @@ failed:
     print_dec(rc);
     print_str("\n");
     return (int)rc;
+}
+
+/* tv030 exposes the IR receiver, chassis keypad and optional USB mouse.
+ * devtmpfs supplies the nodes; Android Pie ueventd.rc supplies their mode. */
+static int prepare_tv_input(void) {
+    static const char *const paths[] = {
+        "/dev/input/event0", "/dev/input/event1", "/dev/input/event2"
+    };
+    for (unsigned int i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        long rc = my_syscall3(212 /* chown32 */, (long)paths[i], 0, 1004);
+        if (i == 2 && rc == -2) /* ENOENT on the two-device board */
+            continue;
+        if (rc == 0)
+            rc = my_syscall2(15 /* chmod */, (long)paths[i], 0660);
+        if (rc != 0) {
+            print_str("[-] configure evdev permissions: ");
+            print_str(paths[i]);
+            print_str(", rc=");
+            print_dec(rc);
+            print_str("\n");
+            return (int)rc;
+        }
+    }
+    return 0;
 }
 
 static int prepare_android_storage(void) {
@@ -1907,13 +2133,8 @@ static int prepare_android_storage(void) {
     if (rc != 0) return rc;
 
     /* Symlink /sdcard and /mnt/sdcard to /storage/self/primary as in init.rc */
-    long r = my_syscall1(10 /* __NR_unlink */, (long)"/sdcard");
-    if (r == -21 /* EISDIR */) my_syscall1(40 /* __NR_rmdir */, (long)"/sdcard");
-    my_syscall2(83 /* __NR_symlink */, (long)"/storage/self/primary", (long)"/sdcard");
-
-    r = my_syscall1(10 /* __NR_unlink */, (long)"/mnt/sdcard");
-    if (r == -21 /* EISDIR */) my_syscall1(40 /* __NR_rmdir */, (long)"/mnt/sdcard");
-    my_syscall2(83 /* __NR_symlink */, (long)"/storage/self/primary", (long)"/mnt/sdcard");
+    checked_symlink("/storage/self/primary", "/sdcard");
+    checked_symlink("/storage/self/primary", "/mnt/sdcard");
 
     print_str("[+] Android storage namespace directories and mounts prepared\n");
     return 0;
@@ -1940,31 +2161,11 @@ static void neutralize_hdmi_cec(void) {
     }
 }
 
-static void spawn_boot_watchdog(void *prop_area) {
-    long pid = my_syscall0(2 /* __NR_fork */);
-    if (pid == 0) {
-        for (int i = 0; i < 65; i++) {
-            my_sleep_ms(1000);
-            const char *bc = prop_area_get(prop_area, "sys.boot_completed");
-            if (bc && bc[0] == '1') {
-                my_syscall1(1 /* __NR_exit */, 0);
-            }
-        }
-        const char *bc = prop_area_get(prop_area, "sys.boot_completed");
-        if (!bc || bc[0] != '1') {
-            print_str("[*] Boot watchdog: ensuring sys.boot_completed=1\n");
-            prop_area_set(prop_area, "sys.boot_completed", "1");
-        }
-        my_syscall1(1 /* __NR_exit */, 0);
-    }
-}
-
 static void prepare_android_runtime_dirs(void) {
     neutralize_hdmi_cec();
 
     static const char str_android_flag2[] = "/data/android_mode";
-    long amfd = my_syscall3(5 /* __NR_open */, (long)str_android_flag2, 0102 /* O_CREAT|O_RDWR */, 0644);
-    if (amfd >= 0) my_syscall1(6 /* __NR_close */, amfd);
+    checked_touch_chmod(str_android_flag2, 0644);
 
     static const char str_dalvik[]       = "/data/dalvik-cache";
     static const char str_dalvik_arm[]   = "/data/dalvik-cache/arm";
@@ -2007,11 +2208,58 @@ static void prepare_android_runtime_dirs(void) {
     checked_mkdir_chown(str_system, 0775, 1000, 1000);
     checked_mkdir_chown(str_system_users, 0775, 1000, 1000);
     checked_mkdir_chown(str_user_0_dir, 0700, 1000, 1000);
+
+    /* In-situ runtime conditioning: ensure fallback settings XMLs exist on /data
+     * for unconditioned stock images or fresh overlays to prevent Bluetooth hang
+     * and setup wizard / provisioning stalls without requiring manual image surgery.
+     */
+    static const char str_settings_global[] = "/data/system/users/0/settings_global.xml";
+    static const char xml_settings_global[] =
+        "<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n"
+        "<settings version=\"170\">\n"
+        "  <setting id=\"1\" name=\"device_provisioned\" value=\"1\" package=\"android\" defaultValue=\"1\" defaultSysSet=\"true\" />\n"
+        "  <setting id=\"2\" name=\"setup_wizard_has_run\" value=\"1\" package=\"android\" defaultValue=\"1\" defaultSysSet=\"true\" />\n"
+        "  <setting id=\"3\" name=\"wifi_on\" value=\"1\" package=\"android\" defaultValue=\"1\" defaultSysSet=\"true\" />\n"
+        "  <setting id=\"4\" name=\"adb_enabled\" value=\"1\" package=\"android\" defaultValue=\"1\" defaultSysSet=\"true\" />\n"
+        "  <setting id=\"5\" name=\"auto_time\" value=\"1\" package=\"android\" defaultValue=\"1\" defaultSysSet=\"true\" />\n"
+        "  <setting id=\"6\" name=\"auto_time_zone\" value=\"1\" package=\"android\" defaultValue=\"1\" defaultSysSet=\"true\" />\n"
+        "  <setting id=\"7\" name=\"package_verifier_enable\" value=\"0\" package=\"android\" defaultValue=\"0\" defaultSysSet=\"true\" />\n"
+        "  <setting id=\"8\" name=\"bluetooth_on\" value=\"0\" package=\"android\" defaultValue=\"0\" defaultSysSet=\"true\" />\n"
+        "  <setting id=\"9\" name=\"bluetooth_disabled\" value=\"1\" package=\"android\" defaultValue=\"1\" defaultSysSet=\"true\" />\n"
+        "  <setting id=\"10\" name=\"heads_up_notifications_enabled\" value=\"1\" package=\"android\" defaultValue=\"1\" defaultSysSet=\"true\" />\n"
+        "</settings>\n";
+    if (my_syscall2(33 /* __NR_access */, (long)str_settings_global, 0) != 0) {
+        long gfd = my_syscall3(5 /* __NR_open */, (long)str_settings_global, 0102 /* O_CREAT|O_RDWR */, 0600);
+        if (gfd >= 0) {
+            my_syscall3(4 /* __NR_write */, gfd, (long)xml_settings_global, sizeof(xml_settings_global) - 1);
+            my_syscall1(6 /* __NR_close */, gfd);
+            my_syscall3(212 /* __NR_chown32 */, (long)str_settings_global, 1000, 1000);
+            print_str("[+] In-situ runtime conditioning: generated fallback settings_global.xml\n");
+        }
+    }
+
+    static const char str_settings_secure[] = "/data/system/users/0/settings_secure.xml";
+    static const char xml_settings_secure[] =
+        "<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n"
+        "<settings version=\"170\">\n"
+        "  <setting id=\"1\" name=\"user_setup_complete\" value=\"1\" package=\"android\" defaultValue=\"1\" defaultSysSet=\"true\" />\n"
+        "  <setting id=\"2\" name=\"tv_user_setup_complete\" value=\"1\" package=\"android\" defaultValue=\"1\" defaultSysSet=\"true\" />\n"
+        "  <setting id=\"3\" name=\"install_non_market_apps\" value=\"1\" package=\"android\" defaultValue=\"1\" defaultSysSet=\"true\" />\n"
+        "  <setting id=\"4\" name=\"lockscreen.disabled\" value=\"1\" package=\"android\" defaultValue=\"1\" defaultSysSet=\"true\" />\n"
+        "</settings>\n";
+    if (my_syscall2(33 /* __NR_access */, (long)str_settings_secure, 0) != 0) {
+        long sfd = my_syscall3(5 /* __NR_open */, (long)str_settings_secure, 0102 /* O_CREAT|O_RDWR */, 0600);
+        if (sfd >= 0) {
+            my_syscall3(4 /* __NR_write */, sfd, (long)xml_settings_secure, sizeof(xml_settings_secure) - 1);
+            my_syscall1(6 /* __NR_close */, sfd);
+            my_syscall3(212 /* __NR_chown32 */, (long)str_settings_secure, 1000, 1000);
+            print_str("[+] In-situ runtime conditioning: generated fallback settings_secure.xml\n");
+        }
+    }
     checked_mkdir_chown(str_user_dir, 0771, 1000, 1000);
     checked_mkdir_chown(str_data_data, 0771, 1000, 1000);
 
-    my_syscall1(10 /* __NR_unlink */, (long)str_user_0_link);
-    my_syscall2(83 /* __NR_symlink */, (long)str_data_data, (long)str_user_0_link);
+    checked_symlink(str_data_data, str_user_0_link);
 
     checked_mkdir_chown(str_data_app, 0771, 1000, 1000);
     checked_mkdir_chown(str_data_app_priv, 0771, 1000, 1000);
@@ -2028,6 +2276,11 @@ static void prepare_android_runtime_dirs(void) {
     checked_mkdir_chown(str_data_tmp, 0771, 2000, 2000);
     checked_mkdir_chown(str_data_misc, 01771, 1000, 9998);
 
+    static const char str_system_backup[] = "/data/system/backup";
+    static const char str_data_backup[]   = "/data/backup";
+    checked_mkdir_chown(str_system_backup, 0700, 1000, 1000);
+    checked_mkdir_chown(str_data_backup, 0700, 1000, 1000);
+
     static const char str_misc_audioserver[] = "/data/misc/audioserver";
     checked_mkdir_chown(str_misc_audioserver, 0700, 1041, 1041);
 
@@ -2037,9 +2290,7 @@ static void prepare_android_runtime_dirs(void) {
     static const char str_data_cache[] = "/data/cache";
     static const char str_cache_link[] = "/cache";
     checked_mkdir_chown(str_data_cache, 0770, 1000, 2001 /* system:cache */);
-    long rc_c = my_syscall1(10 /* __NR_unlink */, (long)str_cache_link);
-    if (rc_c == -21 /* EISDIR */) my_syscall1(40 /* __NR_rmdir */, (long)str_cache_link);
-    my_syscall2(83 /* __NR_symlink */, (long)str_data_cache, (long)str_cache_link);
+    checked_symlink(str_data_cache, str_cache_link);
 
     checked_mkdir_chown(str_misc_de, 01771, 1000, 9998);
     checked_mkdir_chown(str_misc_ce, 01771, 1000, 9998);
@@ -2052,97 +2303,44 @@ static void prepare_android_runtime_dirs(void) {
     checked_mkdir_chown(str_prof_cur, 0771, 1000, 1000);
     checked_mkdir_chown(str_prof_cur_0, 0771, 1000, 1000);
     checked_mkdir_chown(str_prof_ref, 0771, 1000, 1000);
+}
 
-    static const char str_cpuset[]        = "/dev/cpuset";
-    static const char str_cpuset_tasks[]  = "/dev/cpuset/tasks";
-    static const char str_cpuset_fg[]     = "/dev/cpuset/foreground";
-    static const char str_cpuset_fg_t[]   = "/dev/cpuset/foreground/tasks";
-    static const char str_cpuset_bg[]     = "/dev/cpuset/background";
-    static const char str_cpuset_bg_t[]   = "/dev/cpuset/background/tasks";
-    static const char str_cpuset_sysbg[]  = "/dev/cpuset/system-background";
-    static const char str_cpuset_sysbg_t[]= "/dev/cpuset/system-background/tasks";
-    static const char str_cpuset_top[]    = "/dev/cpuset/top-app";
-    static const char str_cpuset_top_t[]  = "/dev/cpuset/top-app/tasks";
-    static const char str_cpuset_res[]    = "/dev/cpuset/restricted";
-    static const char str_cpuset_res_t[]  = "/dev/cpuset/restricted/tasks";
-
-    checked_mkdir(str_cpuset, 0777);
-    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset, 0777);
-    long fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_tasks, 0102 /* O_CREAT|O_RDWR */, 0666);
-    if (fd >= 0) my_syscall1(6, fd);
-    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_tasks, 0666);
-
-    checked_mkdir(str_cpuset_fg, 0777);
-    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_fg, 0777);
-    fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_fg_t, 0102 /* O_CREAT|O_RDWR */, 0666);
-    if (fd >= 0) my_syscall1(6, fd);
-    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_fg_t, 0666);
-
-    checked_mkdir(str_cpuset_bg, 0777);
-    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_bg, 0777);
-    fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_bg_t, 0102 /* O_CREAT|O_RDWR */, 0666);
-    if (fd >= 0) my_syscall1(6, fd);
-    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_bg_t, 0666);
-
-    checked_mkdir(str_cpuset_sysbg, 0777);
-    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_sysbg, 0777);
-    fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_sysbg_t, 0102 /* O_CREAT|O_RDWR */, 0666);
-    if (fd >= 0) my_syscall1(6, fd);
-    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_sysbg_t, 0666);
-
-    checked_mkdir(str_cpuset_top, 0777);
-    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_top, 0777);
-    fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_top_t, 0102 /* O_CREAT|O_RDWR */, 0666);
-    if (fd >= 0) my_syscall1(6, fd);
-    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_top_t, 0666);
-
-    checked_mkdir(str_cpuset_res, 0777);
-    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_res, 0777);
-    fd = my_syscall3(5 /* __NR_open */, (long)str_cpuset_res_t, 0102 /* O_CREAT|O_RDWR */, 0666);
-    if (fd >= 0) my_syscall1(6, fd);
-    my_syscall2(15 /* __NR_chmod */, (long)str_cpuset_res_t, 0666);
-
-    /* schedtune / stune hierarchy */
-    static const char str_stune[]         = "/dev/stune";
-    static const char str_stune_tasks[]   = "/dev/stune/tasks";
-    static const char str_stune_fg[]      = "/dev/stune/foreground";
-    static const char str_stune_fg_t[]    = "/dev/stune/foreground/tasks";
-    static const char str_stune_bg[]      = "/dev/stune/background";
-    static const char str_stune_bg_t[]    = "/dev/stune/background/tasks";
-    static const char str_stune_top[]     = "/dev/stune/top-app";
-    static const char str_stune_top_t[]   = "/dev/stune/top-app/tasks";
-    static const char str_stune_rt[]      = "/dev/stune/rt";
-    static const char str_stune_rt_t[]    = "/dev/stune/rt/tasks";
-
-    checked_mkdir(str_stune, 0777);
-    my_syscall2(15 /* __NR_chmod */, (long)str_stune, 0777);
-    fd = my_syscall3(5 /* __NR_open */, (long)str_stune_tasks, 0102 /* O_CREAT|O_RDWR */, 0666);
-    if (fd >= 0) my_syscall1(6, fd);
-    my_syscall2(15 /* __NR_chmod */, (long)str_stune_tasks, 0666);
-
-    checked_mkdir(str_stune_fg, 0777);
-    my_syscall2(15 /* __NR_chmod */, (long)str_stune_fg, 0777);
-    fd = my_syscall3(5 /* __NR_open */, (long)str_stune_fg_t, 0102 /* O_CREAT|O_RDWR */, 0666);
-    if (fd >= 0) my_syscall1(6, fd);
-    my_syscall2(15 /* __NR_chmod */, (long)str_stune_fg_t, 0666);
-
-    checked_mkdir(str_stune_bg, 0777);
-    my_syscall2(15 /* __NR_chmod */, (long)str_stune_bg, 0777);
-    fd = my_syscall3(5 /* __NR_open */, (long)str_stune_bg_t, 0102 /* O_CREAT|O_RDWR */, 0666);
-    if (fd >= 0) my_syscall1(6, fd);
-    my_syscall2(15 /* __NR_chmod */, (long)str_stune_bg_t, 0666);
-
-    checked_mkdir(str_stune_top, 0777);
-    my_syscall2(15 /* __NR_chmod */, (long)str_stune_top, 0777);
-    fd = my_syscall3(5 /* __NR_open */, (long)str_stune_top_t, 0102 /* O_CREAT|O_RDWR */, 0666);
-    if (fd >= 0) my_syscall1(6, fd);
-    my_syscall2(15 /* __NR_chmod */, (long)str_stune_top_t, 0666);
-
-    checked_mkdir(str_stune_rt, 0777);
-    my_syscall2(15 /* __NR_chmod */, (long)str_stune_rt, 0777);
-    fd = my_syscall3(5 /* __NR_open */, (long)str_stune_rt_t, 0102 /* O_CREAT|O_RDWR */, 0666);
-    if (fd >= 0) my_syscall1(6, fd);
-    my_syscall2(15 /* __NR_chmod */, (long)str_stune_rt_t, 0666);
+/* Use Pie's cpuset v1 names (cpus, mems and tasks). On this four-A53
+ * board, background apps share CPU 0; foreground work may use every
+ * online CPU. The kernel validates every assignment to tasks. */
+static int prepare_android_scheduler(void) {
+    if (checked_mkdir("/dev/cpuset", 0755) != 0 ||
+        check_mount("none", "/dev/cpuset", "cpuset", 2 | 4 | 8 /* nosuid,nodev,noexec */, 0) != 0) {
+        return -1;
+    }
+    static char setup[] =
+        "export PATH=/system/bin:/vendor/bin\n"
+        "cd /dev/cpuset\n"
+        "cpus=$(cat cpus); mems=$(cat mems)\n"
+        "[ -n \"$cpus\" ] && [ -n \"$mems\" ] || exit 1\n"
+        "for group in foreground background system-background top-app restricted; do\n"
+        "  mkdir \"$group\"\n"
+        "  mask=$cpus\n"
+        "  case $group in background|restricted) mask=0 ;; esac\n"
+        "  echo \"$mems\" > \"$group/mems\"\n"
+        "  echo \"$mask\" > \"$group/cpus\"\n"
+        "  chown 1000:1000 \"$group\" \"$group/tasks\"\n"
+        "  chmod 0664 \"$group/tasks\"\n"
+        "done\n"
+        "chmod 0775 system-background\n"
+        "chown 1000:1000 . tasks; chmod 0664 tasks\n"
+        "if grep -q '^schedtune[[:space:]]' /proc/cgroups; then\n"
+        "  mkdir -p /dev/stune\n"
+        "  mount -t cgroup -o nodev,noexec,nosuid,schedtune none /dev/stune\n"
+        "  cd /dev/stune\n"
+        "  mkdir foreground background top-app rt\n"
+        "  chown 1000:1000 . foreground background top-app rt tasks */tasks\n"
+        "  chmod 0664 tasks */tasks\n"
+        "else\n"
+        "  rc=$?; [ \"$rc\" -eq 1 ] || exit \"$rc\"\n"
+        "fi\n";
+    char *argv[] = {"/system/bin/sh", "-ec", setup, 0};
+    return run_process(argv[0], argv, 1);
 }
 
 static int create_control_socket(const char *path, int type, int mode, int uid, int gid) {
@@ -2305,6 +2503,104 @@ failed:
     print_str("[-] Audio service failed: ");
     print_str(cmd);
     print_str(" at ");
+    print_str(operation);
+    print_str(", rc=");
+    print_dec(rc);
+    print_str("\n");
+    if (pid == 0) exit_sm_child(125);
+    return (int)rc;
+}
+
+/* keystore.rc contract:
+ * service keystore /system/bin/keystore /data/misc/keystore
+ * user keystore (1017), group keystore (1017), supplementary groups:
+ * drmrpc (1026), readproc (3009), log (1007).
+ */
+static int spawn_keystore_service(void) {
+    static const char str_misc_keystore[] = "/data/misc/keystore";
+    checked_mkdir_chown(str_misc_keystore, 0700, 1017, 1017);
+
+    long pid = my_syscall0(2 /* __NR_fork */);
+    long rc = pid;
+    const char *operation = "fork";
+    if (pid < 0) goto failed;
+    if (pid > 0) {
+        print_str("[*] keystore daemon spawned, pid=");
+        print_dec(pid);
+        print_str("\n");
+        return (int)pid;
+    }
+
+    for (int fd = 3; fd < 1024; fd++) {
+        my_syscall1(6 /* __NR_close */, fd);
+    }
+
+    unsigned int groups[] = {1017, 1026, 3009, 1007};
+    operation = "setgroups32";
+    rc = my_syscall2(206 /* __NR_setgroups32 */, 4, (long)groups);
+    if (rc != 0) goto failed;
+
+    operation = "setresgid32";
+    rc = my_syscall3(210 /* __NR_setresgid32 */, 1017, 1017, 1017);
+    if (rc != 0) goto failed;
+
+    operation = "setresuid32";
+    rc = my_syscall3(208 /* __NR_setresuid32 */, 1017, 1017, 1017);
+    if (rc != 0) goto failed;
+
+    static const char str_keystore[] = "/system/bin/keystore";
+    char *argv[] = {(char *)str_keystore, (char *)str_misc_keystore, 0};
+    operation = "execve";
+    rc = my_syscall3(11 /* __NR_execve */, (long)str_keystore, (long)argv, (long)envp);
+
+failed:
+    print_str("[-] keystore daemon failed: at ");
+    print_str(operation);
+    print_str(", rc=");
+    print_dec(rc);
+    print_str("\n");
+    if (pid == 0) exit_sm_child(125);
+    return (int)rc;
+}
+
+/* gatekeeperd.rc contract:
+ * service gatekeeperd /system/bin/gatekeeperd /data/misc/gatekeeper
+ * user system (1000), group system (1000).
+ */
+static int spawn_gatekeeper_service(void) {
+    static const char str_misc_gatekeeper[] = "/data/misc/gatekeeper";
+    checked_mkdir_chown(str_misc_gatekeeper, 0700, 1000, 1000);
+
+    long pid = my_syscall0(2 /* __NR_fork */);
+    long rc = pid;
+    const char *operation = "fork";
+    if (pid < 0) goto failed;
+    if (pid > 0) {
+        print_str("[*] gatekeeperd daemon spawned, pid=");
+        print_dec(pid);
+        print_str("\n");
+        return (int)pid;
+    }
+
+    for (int fd = 3; fd < 1024; fd++) {
+        my_syscall1(6 /* __NR_close */, fd);
+    }
+
+    operation = "setresgid32";
+    rc = my_syscall3(210 /* __NR_setresgid32 */, 1000, 1000, 1000);
+    if (rc != 0) goto failed;
+
+    operation = "setresuid32";
+    rc = my_syscall3(208 /* __NR_setresuid32 */, 1000, 1000, 1000);
+    if (rc != 0) goto failed;
+
+    static const char str_gatekeeperd[] = "/system/bin/gatekeeperd";
+    char *argv[] = {(char *)str_gatekeeperd, (char *)str_misc_gatekeeper, 0};
+    operation = "execve";
+    rc = my_syscall3(11 /* __NR_execve */, (long)str_gatekeeperd, (long)argv, (long)envp);
+
+failed:
+    print_str("[-] gatekeeperd daemon failed: at ");
     print_str(operation);
     print_str(", rc=");
     print_dec(rc);
@@ -2610,6 +2906,17 @@ static int spawn_zygote(void) {
     }
 
     if (pid == 0) {
+        /* Pie init.rc sets RLIMIT_NICE before apps drop privileges. Both
+         * rlimit fields are unsigned long in the ARM32 kernel ABI. */
+        const unsigned long nice_limit[2] = {40, 40};
+        long limit_rc = my_syscall2(75 /* __NR_setrlimit */,
+                                    13 /* RLIMIT_NICE */, (long)nice_limit);
+        if (limit_rc != 0) {
+            print_str("[-] zygote: setrlimit(RLIMIT_NICE) failed, rc=");
+            print_dec(limit_rc);
+            print_str("\n");
+            exit_sm_child(1);
+        }
         static const char str_dev_null[] = "/dev/null";
         long null_fd = my_syscall3(5 /* __NR_open */, (long)str_dev_null, 2 /* O_RDWR */, 0);
         if (null_fd < 0) {
@@ -2805,6 +3112,9 @@ static void setup_panel_parameter(void) {
     static const char str_panel_file[] = "/tmp/panel_parameter";
     static const char str_sys_panel1[] = "/sys/realtek_boards/panel_parameter";
     static const char str_sys_panel2[] = "/sys/devices/platform/rtd284x_boards/panel_parameter";
+    static const char str_tmp_dir[]    = "/tmp";
+
+    checked_mkdir(str_tmp_dir, 0777);
 
     long fd = my_syscall3(5 /* __NR_open */, (long)str_panel_file, 0101 /* O_WRONLY|O_CREAT|O_TRUNC */, 0644);
     if (fd < 0) {
@@ -2838,10 +3148,17 @@ static void setup_panel_parameter(void) {
 }
 
 static void setup_software_egl(void) {
-    static const char str_gles_sw[]      = "/system/lib/egl/libGLES_software.so";
-    static const char str_gles_android[] = "/system/lib/egl/libGLES_android.so";
-    static const char str_gles_mali[]    = "/vendor/lib/egl/libGLES_mali.so";
-    static const char str_gles_vendor[]  = "/vendor/lib/egl/libGLES.so";
+    static const char str_gles_sw[]          = "/system/lib/egl/libGLES_software.so";
+    static const char str_gles_android[]     = "/system/lib/egl/libGLES_android.so";
+    static const char str_gles_mali[]        = "/vendor/lib/egl/libGLES_mali.so";
+    static const char str_gles_vendor[]      = "/vendor/lib/egl/libGLES.so";
+    static const char str_gles_ven_android[] = "/vendor/lib/egl/libGLES_android.so";
+
+    if (swiftshader_driver_available()) {
+        print_str("[+] SwiftShader EGL/GLES driver set detected; leaving it\n");
+        print_str("    available for the Android EGL loader\n");
+        return;
+    }
 
     const char *src = str_gles_android;
     long fd = my_syscall3(5 /* __NR_open */, (long)str_gles_sw, 0 /* O_RDONLY */, 0);
@@ -2869,6 +3186,11 @@ static void setup_software_egl(void) {
     if (m3 == 0) {
         print_str("[+] Bound software GLES -> /system/lib/egl/libGLES_android.so\n");
     }
+
+    long m4 = my_syscall5(21 /* __NR_mount */, (long)src, (long)str_gles_ven_android, 0, 4096 /* MS_BIND */, 0);
+    if (m4 == 0) {
+        print_str("[+] Bound software GLES -> /vendor/lib/egl/libGLES_android.so\n");
+    }
 }
 
 static void disable_vendor_hwc(void) {
@@ -2882,7 +3204,7 @@ static void disable_vendor_hwc(void) {
     long r1 = my_syscall2(38 /* __NR_rename */, (long)str_hwc_video, (long)str_hwc_video_dis);
     long r2 = my_syscall2(38 /* __NR_rename */, (long)str_hwc_rtd, (long)str_hwc_rtd_dis);
     long r3 = my_syscall2(38 /* __NR_rename */, (long)str_hwc_grp, (long)str_hwc_grp_dis);
-    if (r1 == 0 || r2 == 0) {
+    if ((r1 == 0 || r1 == -2) && (r2 == 0 || r2 == -2) && (r3 == 0 || r3 == -2)) {
         print_str("[+] Disabled vendor HWC modules to trigger HWC2OnFbAdapter fallback\n");
     } else {
         print_str("[-] WARNING: rename vendor HWC modules failed (r1=");
@@ -2893,10 +3215,144 @@ static void disable_vendor_hwc(void) {
         print_dec(r3);
         print_str("), binding non-ELF dummy over vendor HWC\n");
         static const char str_dummy[] = "/tmp/panel_parameter";
-        my_syscall5(21 /* __NR_mount */, (long)str_dummy, (long)str_hwc_video, 0, 4096 /* MS_BIND */, 0);
-        my_syscall5(21 /* __NR_mount */, (long)str_dummy, (long)str_hwc_rtd, 0, 4096 /* MS_BIND */, 0);
-        my_syscall5(21 /* __NR_mount */, (long)str_dummy, (long)str_hwc_grp, 0, 4096 /* MS_BIND */, 0);
+        long b1 = my_syscall5(21 /* __NR_mount */, (long)str_dummy, (long)str_hwc_video, 0, 4096 /* MS_BIND */, 0);
+        long b2 = my_syscall5(21 /* __NR_mount */, (long)str_dummy, (long)str_hwc_rtd, 0, 4096 /* MS_BIND */, 0);
+        long b3 = my_syscall5(21 /* __NR_mount */, (long)str_dummy, (long)str_hwc_grp, 0, 4096 /* MS_BIND */, 0);
+        if (b1 == 0 && b2 == 0 && b3 == 0) {
+            print_str("[+] Bound /tmp/panel_parameter over vendor HWC modules\n");
+        } else {
+            print_str("[-] WARNING: bind dummy over vendor HWC failed: b1=");
+            print_dec(b1);
+            print_str(", b2=");
+            print_dec(b2);
+            print_str(", b3=");
+            print_dec(b3);
+            print_str("\n");
+        }
     }
+}
+
+static void disable_vendor_keystore(void) {
+    static const char str_ks_rtd[]     = "/vendor/lib/hw/keystore.rtd284x.so";
+    static const char str_ks_rtd_dis[] = "/vendor/lib/hw/keystore.rtd284x.so.disabled";
+    long r = my_syscall2(38 /* __NR_rename */, (long)str_ks_rtd, (long)str_ks_rtd_dis);
+    if (r == 0) {
+        print_str("[+] Disabled vendor keystore module to trigger AOSP software Keymaster 3.0 fallback\n");
+        return;
+    }
+    long u = my_syscall1(10 /* __NR_unlink */, (long)str_ks_rtd);
+    if (u == 0) {
+        print_str("[+] Unlinked vendor keystore module to trigger AOSP software Keymaster 3.0 fallback\n");
+        return;
+    }
+    if (r == -2 /* -ENOENT */ || u == -2 /* -ENOENT */) {
+        print_str("[+] Vendor keystore module already absent; AOSP software Keymaster 3.0 active\n");
+        return;
+    }
+    static const char str_dummy[] = "/tmp/panel_parameter";
+    long m = my_syscall5(21 /* __NR_mount */, (long)str_dummy, (long)str_ks_rtd, 0, 4096 /* MS_BIND */, 0);
+    if (m == 0) {
+        print_str("[+] Bound dummy file over vendor keystore module to trigger AOSP software Keymaster 3.0 fallback\n");
+    } else {
+        print_str("[-] FAILED: mount dummy over vendor keystore, rc=");
+        print_dec(m);
+        print_str(", errno=");
+        print_dec(-m);
+        print_str("\n");
+    }
+}
+
+static void disable_vendor_gatekeeper(void) {
+    static const char str_gk_rtd[]     = "/vendor/lib/hw/gatekeeper.rtd284x.so";
+    static const char str_gk_rtd_dis[] = "/vendor/lib/hw/gatekeeper.rtd284x.so.disabled";
+    long r = my_syscall2(38 /* __NR_rename */, (long)str_gk_rtd, (long)str_gk_rtd_dis);
+    if (r == 0) {
+        print_str("[+] Disabled vendor gatekeeper module to trigger AOSP software Gatekeeper fallback\n");
+        return;
+    }
+    long u = my_syscall1(10 /* __NR_unlink */, (long)str_gk_rtd);
+    if (u == 0) {
+        print_str("[+] Unlinked vendor gatekeeper module to trigger AOSP software Gatekeeper fallback\n");
+        return;
+    }
+    if (r == -2 /* -ENOENT */ || u == -2 /* -ENOENT */) {
+        print_str("[+] Vendor gatekeeper module already absent; AOSP software Gatekeeper active\n");
+        return;
+    }
+    static const char str_dummy[] = "/tmp/panel_parameter";
+    long m = my_syscall5(21 /* __NR_mount */, (long)str_dummy, (long)str_gk_rtd, 0, 4096 /* MS_BIND */, 0);
+    if (m == 0) {
+        print_str("[+] Bound dummy file over vendor gatekeeper module to trigger AOSP software Gatekeeper fallback\n");
+    } else {
+        print_str("[-] FAILED: mount dummy over vendor gatekeeper, rc=");
+        print_dec(m);
+        print_str(", errno=");
+        print_dec(-m);
+        print_str("\n");
+    }
+}
+
+static void install_fstab_rtd284x(void) {
+    static const char str_fstab_path[] = "/fstab.rtd284x";
+    static const char fstab_content[] =
+        "/dev/block/platform/18010800.emmc/by-name/system /system ext4 ro,barrier=1 wait\n"
+        "/dev/block/platform/18010800.emmc/by-name/vendor /vendor ext4 ro,barrier=1 wait\n"
+        "/dev/block/platform/18010800.emmc/by-name/userdata /data ext4 noatime,nosuid,nodev,barrier=1,data=ordered wait,check\n";
+
+    long fd = my_syscall3(5 /* __NR_open */, (long)str_fstab_path, 0101 /* O_WRONLY | O_CREAT */, 0644);
+    if (fd >= 0) {
+        my_syscall3(4 /* __NR_write */, fd, (long)fstab_content, sizeof(fstab_content) - 1);
+        my_syscall1(6 /* __NR_close */, fd);
+        print_str("[+] Created /fstab.rtd284x for vold/fs_mgr\n");
+    }
+}
+
+static int spawn_lmkd_service(void) {
+    const char *cmd = "/system/bin/lmkd";
+    long pid = my_syscall0(2 /* __NR_fork */);
+    if (pid < 0) {
+        print_str("[-] FAILED: fork for lmkd, rc=");
+        print_dec(pid);
+        print_str("\n");
+        return (int)pid;
+    }
+    if (pid > 0) {
+        print_str("[*] lmkd daemon spawned, pid=");
+        print_dec(pid);
+        print_str("\n");
+        return (int)pid;
+    }
+
+    /* Child process */
+    for (int fd = 3; fd < 1024; fd++) {
+        my_syscall1(6 /* __NR_close */, fd);
+    }
+
+    int sfd = create_control_socket("/dev/socket/lmkd", 5 /* SOCK_SEQPACKET */, 0660, 1000, 1000);
+    if (sfd < 0) {
+        print_str("[-] FAILED: create /dev/socket/lmkd, rc=");
+        print_dec(sfd);
+        print_str("\n");
+        my_syscall1(1 /* __NR_exit */, 1);
+    }
+    if (sfd != 3) {
+        my_syscall2(63 /* __NR_dup2 */, sfd, 3);
+        my_syscall1(6 /* __NR_close */, sfd);
+    }
+
+    char *child_env[32];
+    int n = 0;
+    while (envp[n]) { child_env[n] = envp[n]; n++; }
+    child_env[n++] = "ANDROID_SOCKET_lmkd=3";
+    child_env[n] = 0;
+
+    char *argv[] = {(char *)cmd, 0};
+    long exec_rc = my_syscall3(11 /* __NR_execve */, (long)cmd, (long)argv, (long)child_env);
+    print_str("[-] FAILED: execve lmkd, rc=");
+    print_dec(exec_rc);
+    print_str("\n");
+    my_syscall1(1 /* __NR_exit */, 127);
+    return -1;
 }
 
 void _start(void) {
@@ -2977,8 +3433,14 @@ void _start(void) {
         /* Bind mount software GLES implementation over non-emulated Mali libraries */
         setup_software_egl();
 
-        /* Disable non-functional vendor HWC modules to trigger AOSP HWC2OnFbAdapter fallback */
-        disable_vendor_hwc();
+        /* Disable non-functional OP-TEE vendor keystore module to trigger AOSP software Keymaster 3.0 fallback */
+        disable_vendor_keystore();
+
+        /* Disable non-functional OP-TEE vendor gatekeeper module to trigger AOSP software Gatekeeper fallback */
+        disable_vendor_gatekeeper();
+
+        /* Install fstab for vold/fs_mgr */
+        install_fstab_rtd284x();
     }
 
     /* 5. Mount ext4 on /data from /dev/mmcblk0p3, fallback to tmpfs */
@@ -3010,6 +3472,11 @@ void _start(void) {
     /* Set up synthetic panel parameter in sysfs for librtk_hal_panel and HWC */
     setup_panel_parameter();
 
+    /* Disable non-functional vendor HWC modules to trigger AOSP HWC2OnFbAdapter fallback */
+    if (r_vendor == 0) {
+        disable_vendor_hwc();
+    }
+
     /* 6. Set up Android compatibility symlinks */
     my_syscall2(83 /* __NR_symlink */, (long)str_system_etc, (long)str_etc);
     my_syscall2(83 /* __NR_symlink */, (long)str_vendor_odm, (long)str_odm);
@@ -3036,6 +3503,9 @@ void _start(void) {
     my_syscall2(15 /* __NR_chmod */, (long)str_fb_path, 0666);
     my_syscall2(15 /* __NR_chmod */, (long)str_ashmem, 0666);
     my_syscall2(15 /* __NR_chmod */, (long)str_sw_sync, 0666);
+
+    /* Early hardware boot splash display across all boot modes (Android, Diag, Custom) */
+    paint_tcl_tv_display();
 
     /* 8. Prepare directory hierarchies */
     static const char str_xbin_su[] = "/xbin/su";
@@ -3127,7 +3597,13 @@ void _start(void) {
     if (is_android_mode()) {
         print_str("[+] Boot mode: Android Userspace (rendering boot splash display)\n");
         paint_tcl_tv_display();
+        if (prepare_tv_input() != 0) {
+            print_str("[-] Continuing Android boot with degraded TV input\n");
+        }
         prepare_android_runtime_dirs();
+        if (prepare_android_scheduler() != 0) {
+            print_str("[-] Android CPU group setup failed; continuing with kernel defaults\n");
+        }
         if (r_mnt != 0 || r_storage != 0 || prepare_android_storage() != 0) {
             print_str("[-] Android startup stopped: storage setup failed\n");
             /* Keep PID 1 alive and ADB available for diagnosis. */
@@ -3145,6 +3621,24 @@ void _start(void) {
         spawn_logd();
         spawn_tombstoned();
 
+        /* Create /dev/block/platform/18010800.emmc/by-name/ symlink forest.
+         * vold (fs_mgr_read_fstab_dt) reads DT node dev paths like
+         * /dev/block/platform/18010800.emmc/by-name/system; without these
+         * symlinks vold::addFromFstab() dereferences a NULL mnt_pnt and crashes
+         * SIGSEGV on first fstrim call, destabilising system_server via binder.
+         */
+        checked_mkdir("/dev/block", 0755);
+        checked_mkdir("/dev/block/platform", 0755);
+        checked_mkdir("/dev/block/platform/18010800.emmc", 0755);
+        checked_mkdir("/dev/block/platform/18010800.emmc/by-name", 0755);
+        my_syscall2(83 /*__NR_symlink*/, (long)"/dev/mmcblk0p1",
+                    (long)"/dev/block/platform/18010800.emmc/by-name/system");
+        my_syscall2(83 /*__NR_symlink*/, (long)"/dev/mmcblk0p2",
+                    (long)"/dev/block/platform/18010800.emmc/by-name/vendor");
+        my_syscall2(83 /*__NR_symlink*/, (long)"/dev/mmcblk0p3",
+                    (long)"/dev/block/platform/18010800.emmc/by-name/userdata");
+        print_str("[+] /dev/block/by-name symlink forest created for vold/fstab DT resolution\\n");
+
         /* These stock HALs unblock system_server bootstrap. Their hardware
          * operations remain vendor code; registration is checked at runtime.
          */
@@ -3158,11 +3652,21 @@ void _start(void) {
             "/vendor/bin/hw/android.hardware.thermal@1.0-service", 0);
         int tv_input_pid = spawn_bootstrap_hal(
             "/vendor/bin/hw/android.hardware.tv.input@1.0-service", 0);
+        int keymaster_pid = spawn_bootstrap_hal(
+            "/vendor/bin/hw/android.hardware.keymaster@3.0-service", 0);
+        /* Suppress vendor gatekeeper HAL: OP-TEE TrustZone is absent in QEMU.
+         * Suppressing this triggers gatekeeperd's native fallback: "falling back to software GateKeeper". */
+        int gatekeeper_pid = -1;
+        int wifi_pid = spawn_bootstrap_hal(
+            "/vendor/bin/hw/android.hardware.wifi@1.0-service", 0);
 
         int health_pid = spawn_storage_service(0);
         int vold_pid = spawn_storage_service(1);
         int netd_pid = spawn_platform_service(0);
         int storaged_pid = spawn_platform_service(1);
+        int keystore_pid = spawn_keystore_service();
+        int gatekeeperd_pid = spawn_gatekeeper_service();
+        int lmkd_pid = spawn_lmkd_service();
         if (netd_pid > 0) {
             spawn_netd_route_fixup();
         }
@@ -3200,6 +3704,9 @@ void _start(void) {
         /* Allow graphics HALs to initialize IPC before SurfaceFlinger starts */
         my_sleep_ms(1500);
 
+        /* Paint TCL Smart TV display directly to /dev/fb0 before SurfaceFlinger starts */
+        paint_tcl_tv_display();
+
         /* Spawn SurfaceFlinger */
         static const char str_surfaceflinger[] = "/system/bin/surfaceflinger";
         static char *sf_argv[] = {(char *)str_surfaceflinger, 0};
@@ -3209,6 +3716,13 @@ void _start(void) {
             print_dec(sf_pid);
             print_str("\n");
         }
+
+        /* Allow SurfaceFlinger service to register before spawning bootanimation */
+        my_sleep_ms(500);
+
+        /* Skip bootanimation: preserve early hardware boot splash display on /dev/fb0
+         * until SurfaceFlinger composites ProjectivyLauncher */
+        print_str("[*] Preserving early hardware framebuffer splash on /dev/fb0 (skipping bootanimation)\n");
 
         /* Allow Binder IPC endpoints to settle before installd */
         my_sleep_ms(1000);
@@ -3232,8 +3746,6 @@ void _start(void) {
             zygote_pid = spawn_zygote();
             if (zygote_pid < 0) {
                 print_str("[-] Android framework not started: Zygote failed\n");
-            } else if (prop_area) {
-                spawn_boot_watchdog(prop_area);
             }
         } else {
             print_str("[-] Android framework not started: HAL fork failed\n");
@@ -3320,6 +3832,57 @@ void _start(void) {
                     print_str("[!] Supervising: memtrack HAL terminated abnormally, restarting...\n");
                     my_sleep_ms(1000);
                     memtrack_pid = spawn_bootstrap_hal("/vendor/bin/hw/android.hardware.memtrack@1.0-service", 0);
+                } else if (r == wifi_pid) {
+                    print_str("[!] Supervising: wifi HAL terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    wifi_pid = spawn_bootstrap_hal("/vendor/bin/hw/android.hardware.wifi@1.0-service", 0);
+                } else if (r == health_pid) {
+                    print_str("[!] Supervising: healthd terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    health_pid = spawn_storage_service(0);
+                } else if (r == vold_pid) {
+                    print_str("[!] Supervising: vold terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    vold_pid = spawn_storage_service(1);
+                } else if (r == netd_pid) {
+                    print_str("[!] Supervising: netd terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    netd_pid = spawn_platform_service(0);
+                    if (netd_pid > 0) {
+                        spawn_netd_route_fixup();
+                    }
+                } else if (r == storaged_pid) {
+                    print_str("[!] Supervising: storaged terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    storaged_pid = spawn_platform_service(1);
+                } else if (r == audio_hal_pid) {
+                    print_str("[!] Supervising: audio HAL terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    audio_hal_pid = spawn_audio_service(1);
+                } else if (r == audioserver_pid) {
+                    print_str("[!] Supervising: audioserver terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    audioserver_pid = spawn_audio_service(0);
+                } else if (r == keymaster_pid) {
+                    print_str("[!] Supervising: keymaster HAL terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    keymaster_pid = spawn_bootstrap_hal("/vendor/bin/hw/android.hardware.keymaster@3.0-service", 0);
+                } else if (r == gatekeeper_pid) {
+                    print_str("[!] Supervising: gatekeeper HAL terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    gatekeeper_pid = spawn_bootstrap_hal("/vendor/bin/hw/android.hardware.gatekeeper@1.0-service", 0);
+                } else if (r == keystore_pid) {
+                    print_str("[!] Supervising: keystore terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    keystore_pid = spawn_keystore_service();
+                } else if (r == gatekeeperd_pid) {
+                    print_str("[!] Supervising: gatekeeperd terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    gatekeeperd_pid = spawn_gatekeeper_service();
+                } else if (r == lmkd_pid) {
+                    print_str("[!] Supervising: lmkd terminated abnormally, restarting...\n");
+                    my_sleep_ms(1000);
+                    lmkd_pid = spawn_lmkd_service();
                 }
             } else if (r < 0 && r != -4 /* -EINTR */) {
                 my_sleep_ms(1000);

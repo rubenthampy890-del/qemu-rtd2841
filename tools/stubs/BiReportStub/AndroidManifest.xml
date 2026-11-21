@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.tcl.bi"
+    android:versionCode="1"
+    android:versionName="1.0">
+
+    <uses-sdk android:minSdkVersion="16" android:targetSdkVersion="28" />
+
+    <permission android:name="com.tcl.bi.permission.access" android:protectionLevel="normal" />
+    <permission android:name="com.tcl.bi.param" android:protectionLevel="normal" />
+
+    <application
+        android:label="BiReportStub"
+        android:directBootAware="true"
+        android:hasCode="true">
+
+        <!-- Primary Target: com.tcl.bi.service.BiReportService -->
+        <service
+            android:name="com.tcl.bi.service.BiReportService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.tcl.bi.service.BiReportService" />
+                <action android:name="com.tcl.ttvs.bi.core.BIService" />
+            </intent-filter>
+        </service>
+
+        <!-- Secondary Service: BackgroundTaskService -->
+        <service
+            android:name="com.tcl.bi.service.BackgroundTaskService"
+            android:exported="true" />
+
+        <!-- Parameter Provider: com.tcl.bi.param -->
+        <provider
+            android:name="com.tcl.bi.provider.ParamProvider"
+            android:authorities="com.tcl.bi.param"
+            android:exported="true" />
+
+        <!-- Broadcast Receiver for Boot Completed -->
+        <receiver
+            android:name="com.tcl.bi.receiver.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

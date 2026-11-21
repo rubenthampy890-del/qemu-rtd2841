@@ -170,7 +170,7 @@ def build_system_image(workspace_root):
             print("[-] Error: arm-none-eabi-gcc cross-compiler is required to build init but was not found.")
             sys.exit(1)
         print("[*] Compiling standalone mini_init binary...")
-        run_cmd([gcc_bin, "-nostdlib", "-static", "-fno-builtin", "-O2", mini_init_src, "-o", mini_init_bin])
+        run_cmd([gcc_bin, "-nostdlib", "-static", "-fno-builtin", "-O2", mini_init_src, "-o", mini_init_bin, "-lgcc"])
 
     if os.path.isfile(fb_test_src):
         if not gcc_bin:

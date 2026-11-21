@@ -639,8 +639,8 @@ def main():
         boot2_dir = out_dir / "boot2"
         boot2_dir.mkdir()
 
-        subprocess.run([str(ADB), "kill-server"], capture_output=True)
-        time.sleep(1)
+        # Preserve host ADB server for active user desktop sessions (no kill-server)
+        time.sleep(0.5)
 
         adb_port2 = find_free_port()
         print(f"[*] Boot 2 Dynamic host ADB port: {adb_port2}")
@@ -872,8 +872,8 @@ def main():
         boot3_dir.mkdir()
         qmp_sock3 = out_dir / "qmp3.sock"
 
-        subprocess.run([str(ADB), "kill-server"], capture_output=True)
-        time.sleep(1)
+        # Preserve host ADB server for active user desktop sessions (no kill-server)
+        time.sleep(0.5)
 
         adb_port3 = find_free_port()
         print(f"[*] Boot 3 Dynamic host ADB port: {adb_port3}")
