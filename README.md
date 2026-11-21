@@ -13,6 +13,12 @@ I booted TCL’s Android userspace on the emulated RT41 and navigated the
 Projectivy Home app grid on a development Mac using a disk with onboarding
 already completed.
 
+[![Projectivy Home running on the emulated RT41](docs/media/projectivy-home.jpg)](docs/media/rt41-projectivy-home.mp4)
+
+[Watch the 52-second saved-session boot and navigation demo](docs/media/rt41-projectivy-home.mp4).
+I recorded this on my Mac in two parts. The edit skips portions of the boot
+wait and shows navigation at its recorded speed.
+
 ## Known issue: the launcher can restart during first use
 
 On the same Mac, Android booted from fresh user data and displayed Projectivy’s
