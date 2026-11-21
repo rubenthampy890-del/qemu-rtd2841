@@ -17,7 +17,7 @@ This directory contains bare-metal assembly payloads, automated CI test harnesse
 ## Reproducible Compilation
 
 Run these **host** commands from the repository root, after installing the
-prerequisites in [the setup guide](../README.md#1-install-the-host-tools):
+prerequisites in [the setup guide](../README.md#first-run-on-a-new-computer):
 
 ```bash
 make -C tests clean && make -C tests
@@ -51,7 +51,7 @@ On a public checkout, Tier 3 is skipped because its kernel and firmware disk are
 not included. A pass covers only the tiers actually executed. See the
 [prepared-asset instructions](../README.md#linux-verification-with-already-prepared-assets)
 for required inputs and strict mode. The color-bar display has its own
-[launch command](../README.md#5-open-the-display-window).
+[launch command](../BUILD.md#5-open-the-display-window).
 
 ## Shader and Android readiness regression tests
 
