@@ -66,9 +66,11 @@ echo "Network: RTL8168 10.0.2.15 (ADB port forwarded to 5555)"
 echo "Monitor: QMP /tmp/qemu-qmp.sock, HMP /tmp/qemu-monitor.sock"
 echo "========================================================"
 
+: "${QEMU_RAM:=2048M}"
+
 exec "$QEMU" \
   -M rtd2841-tv030 \
-  -m 1024M \
+  -m "$QEMU_RAM" \
   -smp 4 \
   -dtb "$DTB" \
   -kernel "$KERNEL" \

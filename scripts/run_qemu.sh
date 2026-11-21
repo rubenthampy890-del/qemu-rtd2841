@@ -76,9 +76,10 @@ QEMU_MONITOR_SOCK="${QEMU_MONITOR_SOCK:-/tmp/qemu-monitor.sock}"
 QEMU_QMP_SOCK="${QEMU_QMP_SOCK:-/tmp/qemu-qmp.sock}"
 QEMU_MONITOR_MODE="${QEMU_MONITOR_MODE:-both}"
 
+QEMU_RAM="${QEMU_RAM:-2048M}"
 QEMU_ARGS=(
     -M rtd2841-tv030
-    -m 1024M
+    -m "${QEMU_RAM}"
     -smp 4
     -dtb "${DTB}"
     -serial stdio
