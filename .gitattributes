@@ -1,0 +1,3 @@
+
+# Report implementation and tooling languages separately from the test suite.
+tests/** linguist-detectable=false
